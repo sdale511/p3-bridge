@@ -33,5 +33,14 @@
     "datePattern": "YYYY-MM-DD",
     "maxFiles": "14d",
     "suppressStatus": true
+  },
+  "decoder": {
+    "reconnect": {
+      "baseDelayMs": 1000,
+      "maxDelayMs": 30000,
+      "backoffFactor": 1.8,
+      "jitterRatio": 0.2,
+      "connectTimeoutMs": 8000
+    }
   }
 }

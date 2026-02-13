@@ -227,13 +227,93 @@ async function main() {
   if (mode === 'tcp') {
     logger.infoMeta('Starting TCP client', { ip, port, config: cfgPath });
 
-    const socket = net.createConnection({ host: ip, port }, () => {
-      logger.info('TCP connected');
+    const rcfg = {
+      baseDelayMs: cfg.decoder?.reconnect?.baseDelayMs ?? 1000,
+      maxDelayMs: cfg.decoder?.reconnect?.maxDelayMs ?? 30000,
+      backoffFactor: cfg.decoder?.reconnect?.backoffFactor ?? 1.8,
+      jitterRatio: cfg.decoder?.reconnect?.jitterRatio ?? 0.2,
+      connectTimeoutMs: cfg.decoder?.reconnect?.connectTimeoutMs ?? (cfg.defaults?.connectTimeoutMs ?? 8000),
+    };
+
+    let attempt = 0;
+    let socket = null;
+    let reconnectTimer = null;
+    let stopping = false;
+
+    const cleanupSocket = () => {
+      if (!socket) return;
+      try { socket.removeAllListeners(); } catch (_) {}
+      try { socket.destroy(); } catch (_) {}
+      socket = null;
+    };
+
+    const computeDelayMs = () => {
+      // attempt starts at 1 for first retry
+      const exp = Math.max(0, attempt - 1);
+      let delay = rcfg.baseDelayMs * Math.pow(rcfg.backoffFactor, exp);
+      delay = Math.min(delay, rcfg.maxDelayMs);
+      const jitter = delay * rcfg.jitterRatio;
+      // jitter in range [-jitter, +jitter]
+      delay = delay + (Math.random() * 2 - 1) * jitter;
+      return Math.max(0, Math.round(delay));
+    };
+
+    const scheduleReconnect = (reason) => {
+      if (stopping) return;
+      attempt += 1;
+      const delayMs = computeDelayMs();
+      logger.warnMeta('TCP reconnect scheduled', { ip, port, attempt, delayMs, reason });
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connectOnce, delayMs);
+    };
+
+    const connectOnce = () => {
+      if (stopping) return;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+      cleanupSocket();
+
+      logger.infoMeta('TCP connecting', { ip, port, attempt });
+      socket = net.createConnection({ host: ip, port });
+
+      socket.setNoDelay(true);
+
+      // connect timeout
+      const t = setTimeout(() => {
+        if (!socket) return;
+        logger.warnMeta('TCP connect timeout', { ip, port, timeoutMs: rcfg.connectTimeoutMs });
+        try { socket.destroy(new Error('connect timeout')); } catch (_) {}
+      }, rcfg.connectTimeoutMs);
+
+      socket.on('connect', () => {
+        clearTimeout(t);
+        attempt = 0;
+        logger.info('TCP connected');
+      });
+
+      socket.on('data', (chunk) => decoder.push(chunk));
+
+      socket.on('error', (err) => {
+        // keep running; close will trigger reconnect if needed
+        logger.errorMeta('TCP error', { message: err.message, code: err.code });
+      });
+
+      socket.on('close', (hadError) => {
+        clearTimeout(t);
+        logger.warnMeta('TCP connection closed', { hadError });
+        scheduleReconnect('close');
+      });
+    };
+
+    process.on('SIGINT', () => {
+      stopping = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      cleanupSocket();
+      logger.info('Shutting down (SIGINT)');
+      process.exit(0);
     });
 
-    socket.on('data', (chunk) => decoder.push(chunk));
-    socket.on('close', () => logger.warn('TCP connection closed'));
-    socket.on('error', (err) => logger.errorMeta('TCP error', { message: err.message }));
+    connectOnce();
 
   } else {
     logger.infoMeta('Starting UDP listener', { ip, port, config: cfgPath });
