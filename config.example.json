@@ -1,0 +1,31 @@
+{
+  "defaults": {
+    "tcpPort": 5403,
+    "udpListenPort": 5303,
+    "udpSendPort": 5403,
+    "mode": "tcp",
+    "ip": "127.0.0.1"
+  },
+  "post": {
+    "enabled": true,
+    "baseUrl": "https://example.com",
+    "path": "/p3",
+    "method": "POST",
+    "timeoutMs": 8000,
+    "retries": 5,
+    "retryDelayMs": 500,
+    "retryBackoffMultiplier": 2,
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  },
+  "logging": {
+    "dir": "./logs",
+    "console": true,
+    "file": true,
+    "httpFile": true,
+    "jsonFile": true,
+    "suppressStatus": false,
+    "level": "info"
+  }
+}

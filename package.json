@@ -1,0 +1,16 @@
+{
+  "name": "p3-bridge",
+  "version": "1.2.0",
+  "description": "P3 (MYLAPS) protocol bridge: TCP/UDP ingest -> JSON -> HTTPS POST",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "winston": "^3.13.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "yargs": "^17.7.2"
+  }
+}
