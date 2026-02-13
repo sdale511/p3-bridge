@@ -1,0 +1,37 @@
+{
+  "defaults": {
+    "mode": "tcp",
+    "tcpPort": 5403,
+    "udpPort": 5303,
+    "bindAddress": "0.0.0.0",
+    "connectTimeoutMs": 8000
+  },
+  "post": {
+    "baseUrl": "http://0.0.0.0:3000",
+    "path": "/ingest",
+    "method": "POST",
+    "timeoutMs": 8000,
+    "retries": 5,
+    "retryDelayMs": 500,
+    "retryBackoffMultiplier": 2,
+    "maxRetryDelayMs": 8000,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "enabled": true
+  },
+  "logging": {
+    "dir": "./logs",
+    "console": true,
+    "file": true,
+    "httpFile": true,
+    "jsonFile": true,
+    "level": "info",
+    "filename": "p3-bridge-%DATE%.log",
+    "httpFilename": "p3-http-%DATE%.log",
+    "jsonFilename": "p3-json-%DATE%.log",
+    "datePattern": "YYYY-MM-DD",
+    "maxFiles": "14d",
+    "suppressStatus": true
+  }
+}
