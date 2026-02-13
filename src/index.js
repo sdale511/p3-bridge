@@ -10,6 +10,7 @@ const { loadConfig } = require('./config');
 const { makeLogger } = require('./logger');
 const { StreamP3Decoder } = require('./p3/decoder');
 const { buildUrl, postWithRetries } = require('./http/poster');
+const { PostQueue } = require('./http/postQueue');
 
 function pickPort(mode, cfg, cliPort) {
   if (cliPort) return cliPort;
@@ -71,8 +72,44 @@ async function main() {
     enableFile: !argv.noJsonLog
   });
 
+  const postErrorsLogger = makeLogger({
+    name: 'post-errors',
+    dir: logDir,
+    filenamePrefix: 'p3-post-errors',
+    enableConsole: false,
+    enableFile: true
+  });
+
   const postEnabled = (cfg.post?.enabled !== false) && !argv.noPost;
   if (!postEnabled) logger.info('POST disabled (dry-run mode)');
+
+  const postQueue = new PostQueue({
+    filePath: path.join(logDir, 'post-errors-queue.json'),
+    errorLogger: postErrorsLogger,
+    intervalMs: 30_000,
+    drainMaxPerTick: cfg.post?.queueDrainMaxPerTick ?? 5,
+    postFn: async (entry) => {
+      return postWithRetries({
+        logger,
+        httpLogger,
+        method: entry.method,
+        url: entry.url,
+        data: entry.data,
+        headers: entry.headers,
+        timeoutMs: cfg.post.timeoutMs || 8000,
+        retries: cfg.post.retries ?? 5,
+        retryDelayMs: cfg.post.retryDelayMs ?? 500,
+        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2
+      });
+    }
+  });
+
+  if (postEnabled) {
+    if (postQueue.size() > 0) {
+      logger.warnMeta('Loaded queued POST errors', { count: postQueue.size(), file: 'post-errors-queue.json' });
+    }
+    postQueue.start();
+  }
 
   const suppressStatus = Boolean(argv.suppressStatus || cfg.logging?.suppressStatus);
   const isStatusRecord = (p) => {
@@ -155,23 +192,35 @@ async function main() {
     const url = buildUrl(cfg.post.baseUrl, cfg.post.path);
     const method = (cfg.post.method || 'POST').toUpperCase();
 
-    const res = await postWithRetries({
-      logger,
-      httpLogger,
-      method,
-      url,
-      data: payload,
-      headers: cfg.post.headers || { 'Content-Type': 'application/json' },
-      timeoutMs: cfg.post.timeoutMs || 8000,
-      retries: cfg.post.retries ?? 5,
-      retryDelayMs: cfg.post.retryDelayMs ?? 500,
-      retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2
-    });
+    const headers = cfg.post.headers || { 'Content-Type': 'application/json' };
 
-    if (!res.ok) {
-      logger.errorMeta('Failed to post record', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
-    } else {
-      logger.infoMeta('Posted record', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
+    try {
+      const res = await postWithRetries({
+        logger,
+        httpLogger,
+        method,
+        url,
+        data: payload,
+        headers,
+        timeoutMs: cfg.post.timeoutMs || 8000,
+        retries: cfg.post.retries ?? 5,
+        retryDelayMs: cfg.post.retryDelayMs ?? 500,
+        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2
+      });
+
+      if (!res.ok) {
+        logger.errorMeta('Failed to post record (queued)', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
+        postQueue.enqueue({ method, url, headers, data: payload, reason: `HTTP ${res.status}` });
+      } else {
+        logger.infoMeta('Posted record', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
+        // On success, try to replay any queued errors immediately.
+        void postQueue.drain('onSuccess');
+      }
+    } catch (e) {
+      // Network / TLS / timeout errors after retries. Do NOT crash the server.
+      const msg = e?.message || 'post exception';
+      logger.errorMeta('Post exception (queued)', { torName: payload.torName, message: msg, ...(tranCode ? { tranCode } : {}) });
+      postQueue.enqueue({ method, url, headers, data: payload, reason: msg });
     }
   });
 
