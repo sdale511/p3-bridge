@@ -54,7 +54,7 @@
     "enabled": true,
     "baseUrl": "https://regatta-flow-26df5635.base44.app",
     "path": "/api/apps/68c848434f9c971726df5635/functions/timerWebhook",
-    "intervalSec": 30,
+    "intervalSec": 10,
     "timeoutMs": 5000,
     "retries": 2,
     "retryDelayMs": 250,

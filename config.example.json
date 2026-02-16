@@ -47,7 +47,7 @@
     "enabled": true,
     "baseUrl": "https://example.com",
     "path": "/timerWebhook",
-    "intervalSec": 30,
+    "intervalSec": 10,
     "timeoutMs": 5000,
     "retries": 2,
     "retryDelayMs": 250,
