@@ -11,6 +11,8 @@ npm install
 
 ## Run
 
+You can pass the decoder IP/port on the command line, **or** set defaults in `config.json` so no CLI args are required.
+
 TCP (decoder is server, default P3 port 5403):
 
 ```bash
@@ -21,7 +23,22 @@ node src/index.js 192.168.1.89 5403
 
 UDP listen (default 5303):
 
+```
+
+Use config defaults (no command line args):
+
 ```bash
+node src/index.js
+```
+
+`config.json` example:
+```json
+{
+  "defaults": { "mode": "tcp", "tcpHost": "192.168.1.89", "tcpPort": 5403 }
+}
+```
+
+bash
 node src/index.js 0.0.0.0 5303 --udp
 ```
 
@@ -35,6 +52,34 @@ Suppress Status TOR records (TOR 0x0002) from console/file logs, JSON log, and H
 
 ```bash
 node src/index.js 192.168.1.89 --suppress-status
+```
+
+## Timer webhook
+
+p3-bridge can send a small periodic HTTP POST to your race control server so it can keep accurate time and end races even if no web page is open.
+
+- Sends JSON: `{ "utc": <milliseconds since epoch UTC> }`
+- Runs on an interval (default **30 seconds**)
+- Uses a **separate** `timer.baseUrl` + `timer.path`
+- `timer.path` should end with `timerWebhook`
+
+Enable/configure in `config.json`:
+
+```json
+{
+  "timer": {
+    "enabled": true,
+    "baseUrl": "https://example.com",
+    "path": "/api/timerWebhook",
+    "intervalSec": 30
+  }
+}
+```
+
+Disable from the command line:
+
+```bash
+node src/index.js --no-timer
 ```
 
 ## Logs

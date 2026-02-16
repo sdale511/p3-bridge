@@ -26,7 +26,11 @@ function createState() {
     postQueueSize: 0,
 
     lastMessageAt: null,
-    lastPostAt: null
+    lastPostAt: null,
+
+    timerOk: 0,
+    timerFail: 0,
+    lastTimerAt: null
   };
 
   function incMap(map, key) {
@@ -77,6 +81,14 @@ function createState() {
     },
     setPostQueueSize(n) {
       s.postQueueSize = Number(n) || 0;
+    },
+    onTimerPostResult({ ok } = {}) {
+      if (ok) {
+        s.timerOk += 1;
+        s.lastTimerAt = new Date().toISOString();
+      } else {
+        s.timerFail += 1;
+      }
     },
     snapshot() {
       return {

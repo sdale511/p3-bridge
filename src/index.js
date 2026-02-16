@@ -32,6 +32,7 @@ async function main() {
     .option('udp', { type: 'boolean', describe: 'Force UDP mode' })
     .option('config', { type: 'string', describe: 'Path to config json' })
     .option('no-post', { type: 'boolean', default: false, describe: 'Disable HTTPS posting (dry-run)' })
+    .option('no-timer', { type: 'boolean', default: false, describe: 'Disable timer webhook posts' })
     .option('no-console-log', { type: 'boolean', default: false, describe: 'Disable console logging' })
     .option('no-file-log', { type: 'boolean', default: false, describe: 'Disable general rotating file log' })
     .option('no-http-log', { type: 'boolean', default: false, describe: 'Disable HTTP rotating file log' })
@@ -197,6 +198,55 @@ async function main() {
     }
     postQueue.start();
   }
+
+// Timer webhook: periodic heartbeat to race control so it can end races even if UI isn't open.
+const timerEnabled = (cfg.timer?.enabled !== false) && !argv.noTimer;
+if (!timerEnabled) {
+  logger.info('Timer webhook disabled');
+} else {
+  const intervalSec = Number(cfg.timer?.intervalSec ?? 30);
+  const intervalMs = Math.max(5, intervalSec) * 1000; // clamp to >=5s
+  const timerBaseUrl = cfg.timer?.baseUrl;
+  const timerPath = cfg.timer?.path || '/timerWebhook';
+  if (!String(timerPath).toLowerCase().endsWith('timerwebhook')) {
+    logger.warnMeta('Timer path does not end with timerWebhook', { path: timerPath });
+  }
+  let timerUrl = null;
+  try {
+    timerUrl = buildUrl(timerBaseUrl, timerPath);
+  } catch (e) {
+    logger.errorMeta('Timer webhook misconfigured (missing baseUrl?)', { message: e.message });
+    // Do not crash the bridge; just disable timer loop.
+    timerUrl = null;
+  }
+
+  if (timerUrl) {
+    logger.infoMeta('Timer webhook enabled', { url: timerUrl, intervalSec: Math.round(intervalMs/1000) });
+    const t = setInterval(async () => {
+      try {
+        const payload = { utc: Date.now() }; // milliseconds since epoch (UTC)
+        const resp = await postWithRetries({
+          logger,
+          httpLogger,
+          method: 'POST',
+          url: timerUrl,
+          data: payload,
+          headers: cfg.timer?.headers || { 'Content-Type': 'application/json' },
+          timeoutMs: cfg.timer?.timeoutMs || 5000,
+          retries: cfg.timer?.retries ?? 2,
+          retryDelayMs: cfg.timer?.retryDelayMs ?? 250,
+          retryBackoffMultiplier: cfg.timer?.retryBackoffMultiplier ?? 2
+        });
+        state.onTimerPostResult({ ok: resp?.ok === true });
+      } catch (err) {
+        state.onTimerPostResult({ ok: false });
+        logger.warnMeta('Timer webhook post failed', { message: err.message });
+      }
+    }, intervalMs);
+    t.unref?.();
+  }
+}
+
 
   const suppressStatus = Boolean(argv.suppressStatus || cfg.logging?.suppressStatus);
   const isStatusRecord = (p) => {

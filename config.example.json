@@ -4,7 +4,7 @@
     "udpListenPort": 5303,
     "udpSendPort": 5403,
     "mode": "tcp",
-    "ip": "127.0.0.1"
+    "tcpHost": "127.0.0.1"
   },
   "post": {
     "enabled": true,
@@ -42,5 +42,18 @@
     "host": "0.0.0.0",
     "port": 8080,
     "token": null
+  },
+  "timer": {
+    "enabled": true,
+    "baseUrl": "https://example.com",
+    "path": "/timerWebhook",
+    "intervalSec": 30,
+    "timeoutMs": 5000,
+    "retries": 2,
+    "retryDelayMs": 250,
+    "retryBackoffMultiplier": 2,
+    "headers": {
+      "Content-Type": "application/json"
+    }
   }
 }

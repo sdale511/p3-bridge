@@ -167,7 +167,9 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
         // Posting
         'post.enabled', 'post.baseUrl', 'post.path', 'post.method',
         'post.timeoutMs', 'post.retries', 'post.retryDelayMs', 'post.retryBackoffMultiplier',
-        'post.queueDrainMaxPerTick',
+              'post.queueDrainMaxPerTick',
+        // Timer webhook
+        'timer.enabled', 'timer.baseUrl', 'timer.path', 'timer.intervalSec', 'timer.timeoutMs', 'timer.retries', 'timer.retryDelayMs', 'timer.retryBackoffMultiplier',
         // Logging behavior
         'logging.dir', 'logging.suppressStatus',
         // Defaults
@@ -366,6 +368,9 @@ async function refresh(){
     lines.push('<b>Transport:</b> ' + (s.tcpConnected ? 'TCP connected' : (s.mode==='tcp' ? 'TCP disconnected' : 'UDP listening')));
     lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
     lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
+    if (typeof s.timerOk !== 'undefined') {
+      lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
+    }
     document.getElementById('status').innerHTML = lines.join('<br/>');
     document.getElementById('updated').textContent = 'Updated ' + j.at;
     document.getElementById('raw').textContent = JSON.stringify(j, null, 2);

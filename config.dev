@@ -1,13 +1,14 @@
 {
   "defaults": {
     "mode": "tcp",
+    "tcpHost": "192.168.4.75",
     "tcpPort": 5403,
     "udpPort": 5303,
     "bindAddress": "0.0.0.0",
     "connectTimeoutMs": 8000
   },
   "post": {
-    "baseUrl": "http://0.0.0.0:3000",
+    "baseUrl": "http://localhost:3000",
     "path": "/ingest",
     "method": "POST",
     "timeoutMs": 8000,
@@ -41,6 +42,25 @@
       "backoffFactor": 1.8,
       "jitterRatio": 0.2,
       "connectTimeoutMs": 8000
+    }
+  },
+  "admin": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "token": null
+  },
+  "timer": {
+    "enabled": true,
+    "baseUrl": "http://localhost:3000",
+    "path": "/ingest",
+    "intervalSec": 10,
+    "timeoutMs": 5000,
+    "retries": 2,
+    "retryDelayMs": 250,
+    "retryBackoffMultiplier": 2,
+    "headers": {
+      "Content-Type": "application/json"
     }
   }
 }
