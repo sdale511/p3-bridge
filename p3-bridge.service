@@ -1,0 +1,26 @@
+[Unit]
+Description=P3 Bridge Node Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jycadmin
+WorkingDirectory=/home/jycadmin/p3-bridge
+
+# Start (config-driven; no CLI args required)
+ExecStart=/usr/bin/node /home/jycadmin/p3-bridge/src/index.js
+
+Restart=always
+RestartSec=3
+
+Environment=NODE_ENV=production
+# Optional: increase file watch limits / open files
+LimitNOFILE=65535
+
+# Clean shutdown
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
