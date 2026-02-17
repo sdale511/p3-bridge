@@ -333,6 +333,12 @@ app.get('/admin', (req, res) => {
           <label><small>Lines</small></label>
           <input id="logLines" type="number" min="10" max="1000" value="200" />
         </div>
+        <div style="min-width:220px;flex:0;align-self:flex-end">
+          <label style="display:flex;gap:8px;align-items:center;user-select:none">
+            <input id="hideTimerHttp" type="checkbox" />
+            <small>Hide timerWebhook (http log)</small>
+          </label>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button id="tailBtn">Tail</button>
           <button id="tailAutoBtn" data-on="0">Auto: off</button>
@@ -431,8 +437,16 @@ async function tailOnce(){
     if(!r.ok){
       try{ const j = JSON.parse(t); throw new Error(j.error || ('HTTP '+r.status)); }catch(_){ throw new Error('HTTP '+r.status); }
     }
-    pre.textContent = t || '';
-    hint.textContent = 'Showing last ' + lines + ' lines of ' + name + ' (newest file)';
+    // Optionally filter timer heartbeats from http log view
+    let out = t || '';
+    const hideTimer = (name === 'http') && document.getElementById('hideTimerHttp')?.checked;
+    if (hideTimer && out) {
+      const before = out.split('\\n');
+      const after = before.filter(line => !String(line).toLowerCase().includes('timerwebhook'));
+      out = after.join('\\n');
+    }
+    pre.textContent = out;
+    hint.textContent = 'Showing last ' + lines + ' lines of ' + name + ' (newest file)' + (hideTimer ? ' (timerWebhook filtered)' : '');
     pre.scrollTop = pre.scrollHeight;
   }catch(e){
     hint.textContent = '';
@@ -457,6 +471,21 @@ document.getElementById('setTargetBtn').onclick = () => setTarget(false,false);
 document.getElementById('setTargetPersistBtn').onclick = () => setTarget(true,true);
 document.getElementById('tailBtn').onclick = () => tailOnce();
 document.getElementById('tailAutoBtn').onclick = () => setAuto(document.getElementById('tailAutoBtn').dataset.on !== '1');
+
+const logNameEl = document.getElementById('logName');
+const hideTimerEl = document.getElementById('hideTimerHttp');
+function updateHideToggle(){
+  const isHttp = (logNameEl && logNameEl.value === 'http');
+  if (!hideTimerEl) return;
+  hideTimerEl.disabled = !isHttp;
+  // visually deemphasize when not applicable
+  const wrap = hideTimerEl.closest('label');
+  if (wrap) wrap.style.opacity = isHttp ? '1' : '0.5';
+}
+if (logNameEl) logNameEl.onchange = () => { updateHideToggle(); tailOnce(); };
+if (hideTimerEl) hideTimerEl.onchange = () => tailOnce();
+updateHideToggle();
+
 refresh();
 setInterval(refresh, 2000);
 </script>
