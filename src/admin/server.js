@@ -100,7 +100,7 @@ async function atomicWriteJson(filePath, obj) {
   await fs.promises.rename(tmp, filePath);
 }
 
-function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, logDir, logPrefixes }) {
+function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, setTimerInterval, logDir, logPrefixes }) {
   const cfg = cfgRef();
   const adminCfg = cfg.admin || {};
   const enabled = adminCfg.enabled !== false;
@@ -152,14 +152,16 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
     });
   });
 
-  // Patch a SAFE subset of config.json, optionally trigger restart (default true)
+  // Patch a SAFE subset of config, optionally persist to config.json (default true)
+  
+  // Patch a SAFE subset of config, optionally persist to config.json (default true)
   app.put('/admin/api/settings', async (req, res) => {
     try {
       const patch = req.body || {};
-      const restart = (req.query.restart ?? 'true').toString().toLowerCase() !== 'false';
+      const persist = (req.query.persist ?? 'true').toString().toLowerCase() !== 'false';
 
-      const raw = await fs.promises.readFile(cfgPath, 'utf8');
-      const current = JSON.parse(raw);
+      // Apply patch to the live config first (so Set (no save) works)
+      const live = cfgRef();
 
       const allowList = [
         // Admin
@@ -167,7 +169,7 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
         // Posting
         'post.enabled', 'post.baseUrl', 'post.path', 'post.method',
         'post.timeoutMs', 'post.retries', 'post.retryDelayMs', 'post.retryBackoffMultiplier',
-              'post.queueDrainMaxPerTick',
+        'post.queueDrainMaxPerTick',
         // Timer webhook
         'timer.enabled', 'timer.baseUrl', 'timer.path', 'timer.intervalSec', 'timer.timeoutMs', 'timer.retries', 'timer.retryDelayMs', 'timer.retryBackoffMultiplier',
         // Logging behavior
@@ -179,17 +181,15 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
         'decoder.reconnect.backoffFactor', 'decoder.reconnect.jitterRatio', 'decoder.reconnect.connectTimeoutMs'
       ];
 
-      const { applied, rejected } = applyAllowedPatch(current, patch, allowList);
-      await atomicWriteJson(cfgPath, current);
+      const { applied, rejected } = applyAllowedPatch(live, patch, allowList);
 
-      logger.infoMeta('Admin settings updated', { appliedCount: applied.length, rejectedCount: rejected.length, restart });
-
-      res.json({ ok: true, applied, rejected, restart });
-
-      if (restart) {
-        // Give the response time to flush before exit
-        setTimeout(() => requestRestart('admin settings updated'), 250).unref();
+      if (persist) {
+        await atomicWriteJson(cfgPath, live);
       }
+
+      logger.infoMeta('Admin settings updated', { appliedCount: applied.length, rejectedCount: rejected.length, persist });
+
+      res.json({ ok: true, applied, rejected, persist });
     } catch (e) {
       logger.errorMeta('Admin settings update failed', { message: e?.message });
       res.status(400).json({ ok: false, error: e?.message || 'settings update failed' });
@@ -202,22 +202,25 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
   });
 
   
+  
+  // Update decoder target (in-memory), optionally persist defaults.tcpHost/tcpPort to config.json
   app.put('/admin/api/target', async (req, res) => {
     try {
       const body = req.body || {};
       const ip = (body.ip || '').toString().trim();
       const port = safeInt(body.port, null);
       const persist = (req.query.persist === 'true' || body.persist === true);
-      const restart = (req.query.restart === 'true' || body.restart === true);
 
       if (!ip) return res.status(400).json({ ok: false, error: 'ip required' });
       if (!port || port < 1 || port > 65535) return res.status(400).json({ ok: false, error: 'valid port required' });
 
+      // Update live config defaults
+      const c = cfgRef();
+      c.defaults = c.defaults || {};
+      c.defaults.tcpHost = ip;
+      c.defaults.tcpPort = port;
+
       if (persist) {
-        const c = cfgRef();
-        c.defaults = c.defaults || {};
-        c.defaults.tcpHost = ip;
-        c.defaults.tcpPort = port;
         await atomicWriteJson(cfgPath, c);
       }
 
@@ -225,18 +228,65 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
         setTarget({ ip, port });
       }
 
-      res.json({ ok: true, at: nowIso(), ip, port, persist, restart });
-
-      if (restart) {
-        setTimeout(() => requestRestart('admin requested restart (target change)'), 250).unref();
-      }
+      res.json({ ok: true, at: nowIso(), ip, port, persist });
     } catch (e) {
       logger.errorMeta('Admin target update failed', { message: e?.message });
       res.status(400).json({ ok: false, error: e?.message || 'target update failed' });
     }
   });
 
-  app.get('/admin/api/log/tail', async (req, res) => {
+  
+  // Update timer interval (in-memory), optionally persist timer.intervalSec to config.json
+  app.put('/admin/api/timer/interval', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const intervalSec = safeInt(body.intervalSec, null);
+      const persist = (req.query.persist === 'true' || body.persist === true);
+
+      if (!intervalSec || intervalSec < 5 || intervalSec > 3600) {
+        return res.status(400).json({ ok: false, error: 'intervalSec must be between 5 and 3600' });
+      }
+
+      const c = cfgRef();
+      c.timer = c.timer || {};
+      c.timer.intervalSec = intervalSec;
+
+      if (typeof setTimerInterval === 'function') {
+        setTimerInterval(intervalSec);
+      }
+
+      if (persist) {
+        await atomicWriteJson(cfgPath, c);
+      }
+
+      res.json({ ok: true, at: nowIso(), intervalSec, persist });
+    } catch (e) {
+      logger.errorMeta('Admin timer interval update failed', { message: e?.message });
+      res.status(400).json({ ok: false, error: e?.message || 'timer interval update failed' });
+    }
+  });
+
+  // Clear (truncate) the newest log file for the selected log name
+  app.post('/admin/api/log/clear', async (req, res) => {
+    try {
+      const name = (req.query.name || 'main').toString();
+      const dir = logDir || path.join(process.cwd(), 'logs');
+      const prefixes = logPrefixes || { main: 'p3', http: 'p3-http', json: 'p3-json', 'post-errors': 'p3-post-errors' };
+      const prefix = prefixes[name];
+      if (!prefix) return res.status(400).json({ ok: false, error: `unknown log name: ${name}` });
+
+      const filePath = await findNewestLogFile(dir, prefix);
+      if (!filePath) return res.status(404).json({ ok: false, error: 'log file not found', dir, prefix });
+
+      await fs.promises.truncate(filePath, 0);
+      res.json({ ok: true, at: nowIso(), cleared: true, name, file: path.basename(filePath) });
+    } catch (e) {
+      logger.errorMeta('Admin log clear failed', { message: e?.message });
+      res.status(500).json({ ok: false, error: e?.message || 'log clear failed' });
+    }
+  });
+
+app.get('/admin/api/log/tail', async (req, res) => {
     try {
       const name = (req.query.name || 'main').toString();
       const lines = Math.min(1000, Math.max(10, safeInt(req.query.lines, 200)));
@@ -294,20 +344,32 @@ app.get('/admin', (req, res) => {
       <label style="margin-top:6px;display:block"><small>Port</small></label>
       <input id="targetPort" type="number" min="1" max="65535" placeholder="e.g. 5403" />
       <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
-        <button id="setTargetBtn">Set + Reconnect</button>
-        <button id="setTargetPersistBtn">Save + Restart</button>
+        <button id="setTargetBtn">Set</button>
+        <button id="setTargetPersistBtn">Set and Save</button>
       </div>
-      <small>“Set + Reconnect” changes the in-memory target immediately. “Save + Restart” writes defaults.tcpHost/tcpPort to config and restarts.</small>
+      <small>“Set” changes the in-memory target immediately (reconnects). “Set and Save” also writes defaults.tcpHost/tcpPort to config.json.</small>
       <div id="targetResult"></div>
     </div>
+    <div class="card" style="min-width:260px;max-width:320px">
+      <h3>Timer</h3>
+      <label><small>Interval (seconds)</small></label>
+      <input id="timerIntervalSec" type="number" min="5" max="3600" placeholder="30" />
+      <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
+        <button id="setTimerBtn">Set</button>
+        <button id="setTimerPersistBtn">Set and Save</button>
+      </div>
+      <small>Updates timer heartbeat frequency. Use the main Restart button if you also changed other timer settings (baseUrl/path).</small>
+      <div id="timerResult"></div>
+    </div>
+
     <div class="card" style="flex:1;min-width:320px">
       <h3>Update settings (JSON patch)</h3>
       <textarea id="patch" rows="10" spellcheck="false">{\n  \"post\": { \"enabled\": true }\n}</textarea>
       <div style="display:flex;gap:10px;margin-top:8px">
-        <button id="applyBtn">Apply + Restart</button>
-        <button id="applyNoRestartBtn">Apply (no restart)</button>
+        <button id="applyBtn">Set</button>
+        <button id="applyPersistBtn">Set and Save</button>
       </div>
-      <small>Only a safe subset of fields can be changed (post.*, logging.suppressStatus, admin.*, defaults.*, decoder.reconnect.*).</small>
+      <small>Only a safe subset of fields can be changed (post.*, timer.*, logging.*, admin.*, defaults.*, decoder.reconnect.*).</small>
       <div id="applyResult"></div>
     </div>
   </div>
@@ -341,6 +403,7 @@ app.get('/admin', (req, res) => {
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button id="tailBtn">Tail</button>
+          <button id="clearLogBtn">Clear</button>
           <button id="tailAutoBtn" data-on="0">Auto: off</button>
         </div>
         <small id="logHint"></small>
@@ -367,6 +430,8 @@ async function refresh(){
     const tport = document.getElementById('targetPort');
     if(tip && !tip.value) tip.value = (s.ip || '');
     if(tport && !tport.value) tport.value = (s.port || '');
+    const tint = document.getElementById('timerIntervalSec');
+    if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
 
     const lines = [];
     lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
@@ -390,11 +455,12 @@ document.getElementById('restartBtn').onclick = async () => {
   try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
 };
 
-async function apply(restart){
+
+async function apply(persist){
   let patch;
   try{ patch = JSON.parse(document.getElementById('patch').value); }
   catch(e){ alert('Patch JSON is invalid: ' + e.message); return; }
-  const url = '/admin/api/settings?restart=' + (restart ? 'true' : 'false');
+  const url = '/admin/api/settings?persist=' + (persist ? 'true' : 'false');
   try{
     const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
     document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
@@ -403,10 +469,10 @@ async function apply(restart){
   }
 }
 
-document.getElementById('applyBtn').onclick = () => apply(true);
-document.getElementById('applyNoRestartBtn').onclick = () => apply(false);
+document.getElementById('applyBtn').onclick = () => apply(false);
+document.getElementById('applyPersistBtn').onclick = () => apply(true);
 
-async function setTarget(persist, doRestart){
+async function setTarget(persist){
   const ip = document.getElementById('targetIp').value.trim();
   const port = Number(document.getElementById('targetPort').value);
   const out = document.getElementById('targetResult');
@@ -414,12 +480,12 @@ async function setTarget(persist, doRestart){
   try{
     const qs = [];
     if(persist) qs.push('persist=true');
-    if(doRestart) qs.push('restart=true');
+
     const url = '/admin/api/target' + (qs.length ? ('?' + qs.join('&')) : '');
-    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ip, port, persist, restart: doRestart })});
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ip, port, persist })});
     const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
     if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-    out.innerHTML = '<small>Updated target to ' + ip + ':' + port + (persist ? ' (saved)' : '') + (doRestart ? ' (restarting...)' : '') + '</small>';
+    out.innerHTML = '<small>Updated target to ' + ip + ':' + port + (persist ? ' (saved)' : '') + '</small>';
   }catch(e){
     out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
   }
@@ -467,8 +533,40 @@ function setAuto(on){
 }
 
 
-document.getElementById('setTargetBtn').onclick = () => setTarget(false,false);
-document.getElementById('setTargetPersistBtn').onclick = () => setTarget(true,true);
+document.getElementById('setTargetBtn').onclick = () => setTarget(false);
+document.getElementById('setTargetPersistBtn').onclick = () => setTarget(true);
+
+async function setTimerInterval(persist){
+  const val = Number(document.getElementById('timerIntervalSec').value);
+  const out = document.getElementById('timerResult');
+  out.textContent = '';
+  try{
+    if(!val || val < 5 || val > 3600) throw new Error('interval must be between 5 and 3600 seconds');
+    const url = '/admin/api/timer/interval' + (persist ? '?persist=true' : '');
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ intervalSec: val, persist })});
+    const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    out.innerHTML = '<small>Timer interval set to ' + val + 's' + (persist ? ' (saved)' : '') + '</small>';
+  }catch(e){
+    out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
+  }
+}
+
+document.getElementById('setTimerBtn').onclick = () => setTimerInterval(false);
+document.getElementById('setTimerPersistBtn').onclick = () => setTimerInterval(true);
+
+
+document.getElementById('clearLogBtn').onclick = async () => {
+  const name = document.getElementById('logName').value;
+  if(!confirm('Clear current ' + name + ' log file for today?')) return;
+  try{
+    await api('/admin/api/log/clear?name=' + encodeURIComponent(name), {method:'POST'});
+    await tailOnce();
+  }catch(e){
+    alert(e.message);
+  }
+};
+
 document.getElementById('tailBtn').onclick = () => tailOnce();
 document.getElementById('tailAutoBtn').onclick = () => setAuto(document.getElementById('tailAutoBtn').dataset.on !== '1');
 

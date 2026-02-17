@@ -30,7 +30,8 @@ function createState() {
 
     timerOk: 0,
     timerFail: 0,
-    lastTimerAt: null
+    lastTimerAt: null,
+    timerIntervalSec: null
   };
 
   function incMap(map, key) {
@@ -81,6 +82,9 @@ function createState() {
     },
     setPostQueueSize(n) {
       s.postQueueSize = Number(n) || 0;
+    },
+    setTimerIntervalSec(n) {
+      s.timerIntervalSec = Number(n) || null;
     },
     onTimerPostResult({ ok } = {}) {
       if (ok) {

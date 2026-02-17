@@ -161,6 +161,7 @@ async function main() {
     state,
     requestRestart,
     setTarget,
+    setTimerInterval,
     logDir,
     logPrefixes: { main: "p3", http: "p3-http", json: "p3-json", "post-errors": "p3-post-errors" }
   });
@@ -200,52 +201,83 @@ async function main() {
   }
 
 // Timer webhook: periodic heartbeat to race control so it can end races even if UI isn't open.
-const timerEnabled = (cfg.timer?.enabled !== false) && !argv.noTimer;
-if (!timerEnabled) {
-  logger.info('Timer webhook disabled');
-} else {
-  const intervalSec = Number(cfg.timer?.intervalSec ?? 30);
-  const intervalMs = Math.max(5, intervalSec) * 1000; // clamp to >=5s
-  const timerBaseUrl = cfg.timer?.baseUrl;
-  const timerPath = cfg.timer?.path || '/timerWebhook';
-  if (!String(timerPath).toLowerCase().endsWith('timerwebhook')) {
-    logger.warnMeta('Timer path does not end with timerWebhook', { path: timerPath });
-  }
+  const timerEnabled = (cfg.timer?.enabled !== false) && !argv.noTimer;
+
+  let timerIntervalHandle = null;
   let timerUrl = null;
-  try {
-    timerUrl = buildUrl(timerBaseUrl, timerPath);
-  } catch (e) {
-    logger.errorMeta('Timer webhook misconfigured (missing baseUrl?)', { message: e.message });
-    // Do not crash the bridge; just disable timer loop.
-    timerUrl = null;
+
+  function buildTimerUrlFromCfg() {
+    const timerBaseUrl = cfg.timer?.baseUrl;
+    const timerPath = cfg.timer?.path || '/timerWebhook';
+    if (!String(timerPath).toLowerCase().endsWith('timerwebhook')) {
+      logger.warnMeta('Timer path does not end with timerWebhook', { path: timerPath });
+    }
+    try {
+      return buildUrl(timerBaseUrl, timerPath);
+    } catch (e) {
+      logger.errorMeta('Timer webhook misconfigured (missing baseUrl?)', { message: e.message });
+      return null;
+    }
   }
 
-  if (timerUrl) {
-    logger.infoMeta('Timer webhook enabled', { url: timerUrl, intervalSec: Math.round(intervalMs/1000) });
-    const t = setInterval(async () => {
+  async function doTimerPostOnce() {
+    const payload = { utc: Date.now() }; // milliseconds since epoch (UTC)
+    await postWithRetries({
+      logger,
+      httpLogger,
+      method: 'POST',
+      url: timerUrl,
+      data: payload,
+      headers: cfg.timer?.headers || { 'Content-Type': 'application/json' },
+      timeoutMs: cfg.timer?.timeoutMs || 5000,
+      retries: cfg.timer?.retries ?? 2,
+      retryDelayMs: cfg.timer?.retryDelayMs ?? 250,
+      retryBackoffMultiplier: cfg.timer?.retryBackoffMultiplier ?? 2
+    });
+  }
+
+  function stopTimerLoop() {
+    if (timerIntervalHandle) {
+      clearInterval(timerIntervalHandle);
+      timerIntervalHandle = null;
+    }
+  }
+
+  function startTimerLoop(intervalSec) {
+    stopTimerLoop();
+    if (!timerEnabled) return;
+    timerUrl = buildTimerUrlFromCfg();
+    if (!timerUrl) return;
+
+    const sec = Math.max(5, Number(intervalSec || cfg.timer?.intervalSec || 30));
+    state.setTimerIntervalSec(sec);
+    logger.infoMeta('Timer webhook enabled', { url: timerUrl, intervalSec: sec });
+
+    timerIntervalHandle = setInterval(async () => {
       try {
-        const payload = { utc: Date.now() }; // milliseconds since epoch (UTC)
-        const resp = await postWithRetries({
-          logger,
-          httpLogger,
-          method: 'POST',
-          url: timerUrl,
-          data: payload,
-          headers: cfg.timer?.headers || { 'Content-Type': 'application/json' },
-          timeoutMs: cfg.timer?.timeoutMs || 5000,
-          retries: cfg.timer?.retries ?? 2,
-          retryDelayMs: cfg.timer?.retryDelayMs ?? 250,
-          retryBackoffMultiplier: cfg.timer?.retryBackoffMultiplier ?? 2
-        });
-        state.onTimerPostResult({ ok: resp?.ok === true });
+        await doTimerPostOnce();
+        state.onTimerPostResult({ ok: true });
       } catch (err) {
         state.onTimerPostResult({ ok: false });
         logger.warnMeta('Timer webhook post failed', { message: err.message });
       }
-    }, intervalMs);
-    t.unref?.();
+    }, sec * 1000);
+    timerIntervalHandle.unref?.();
   }
-}
+
+  // Exposed to admin server: change interval without restart
+  function setTimerInterval(newIntervalSec) {
+    cfg.timer = cfg.timer || {};
+    cfg.timer.intervalSec = Number(newIntervalSec);
+    startTimerLoop(cfg.timer.intervalSec);
+  }
+
+  if (!timerEnabled) {
+    logger.info('Timer webhook disabled');
+    state.setTimerIntervalSec(null);
+  } else {
+    startTimerLoop(cfg.timer?.intervalSec ?? 30);
+  }
 
 
   const suppressStatus = Boolean(argv.suppressStatus || cfg.logging?.suppressStatus);
