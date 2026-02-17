@@ -101,6 +101,14 @@ async function atomicWriteJson(filePath, obj) {
 }
 
 function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, setTimerInterval, logDir, logPrefixes }) {
+  const zipVersion = 'v13';
+  let pkgVersion = '';
+  try {
+    const pj = JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
+    if (pj && pj.version) pkgVersion = pj.version;
+  } catch (e) {}
+  const appVersion = pkgVersion ? `${zipVersion} (pkg v${pkgVersion})` : zipVersion;
+
   const cfg = cfgRef();
   const adminCfg = cfg.admin || {};
   const enabled = adminCfg.enabled !== false;
@@ -133,7 +141,7 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
   app.get('/healthz', (req, res) => res.json({ ok: true, at: nowIso() }));
 
   app.get('/admin/api/status', (req, res) => {
-    res.json({ ok: true, at: nowIso(), cfgPath, state: state.snapshot() });
+    res.json({ ok: true, at: nowIso(), cfgPath, version: appVersion, state: state.snapshot() });
   });
 
   app.get('/admin/api/settings', (req, res) => {
@@ -142,6 +150,7 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
       ok: true,
       at: nowIso(),
       cfgPath,
+      config: c,
       settings: {
         admin: c.admin || {},
         post: c.post || {},
@@ -322,10 +331,14 @@ app.get('/admin', (req, res) => {
     button:hover{background:#f2f2f2}
     input,textarea{width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #ccc}
     small{color:#666}
-  </style>
+  
+    .codebox{max-height:240px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:12px;white-space:pre;}
+    .muted{color:#666}
+    .small{font-size:12px}
+</style>
 </head>
 <body>
-  <h2>p3-bridge admin</h2>
+  <h2>p3-bridge admin <span class="muted">${appVersion}</span></h2>
   <div class="row">
     <div class="card">
       <h3>Status</h3>
@@ -364,7 +377,19 @@ app.get('/admin', (req, res) => {
 
     <div class="card" style="flex:1;min-width:320px">
       <h3>Update settings (JSON patch)</h3>
-      <textarea id="patch" rows="10" spellcheck="false">{\n  \"post\": { \"enabled\": true }\n}</textarea>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px 0">
+        <button class="secBtn" data-sec="__full">Load full config</button>
+        <button class="secBtn" data-sec="post">Load post</button>
+        <button class="secBtn" data-sec="timer">Load timer</button>
+        <button class="secBtn" data-sec="logging">Load logging</button>
+        <button class="secBtn" data-sec="admin">Load admin</button>
+        <button class="secBtn" data-sec="defaults">Load defaults</button>
+        <button class="secBtn" data-sec="decoder.reconnect">Load decoder.reconnect</button>
+      </div>
+      <div class="small muted">Current config (read-only)</div>
+      <pre id="configCurrent" class="codebox"></pre>
+      <div class="small muted" style="margin-top:8px">Edit JSON (only allowlisted keys are applied)</div>
+      <textarea id="patch" rows="10" spellcheck="false"></textarea>
       <div style="display:flex;gap:10px;margin-top:8px">
         <button id="applyBtn">Set</button>
         <button id="applyPersistBtn">Set and Save</button>
@@ -471,6 +496,50 @@ async function apply(persist){
 
 document.getElementById('applyBtn').onclick = () => apply(false);
 document.getElementById('applyPersistBtn').onclick = () => apply(true);
+
+// Load current config into the JSON patch box (template for allowed changes)
+async function loadSection(sec){
+  const out = document.getElementById('applyResult');
+  out.textContent = '';
+  try{
+    const j = await api('/admin/api/settings');
+    const cfg = (j && j.config) ? j.config : {};
+    // Always show the full current config tree (read-only)
+    const cur = document.getElementById('configCurrent');
+    if(cur) cur.textContent = JSON.stringify(cfg, null, 2);
+
+    let payload = {};
+    if(sec === '__full'){
+      payload = cfg;
+    } else if(sec === 'decoder.reconnect'){
+      payload = { decoder: { reconnect: (cfg.decoder && cfg.decoder.reconnect) ? cfg.decoder.reconnect : {} } };
+    } else {
+      payload[sec] = (cfg && cfg[sec]) ? cfg[sec] : {};
+    }
+
+    const patch = document.getElementById('patch');
+    if(patch){
+      patch.value = JSON.stringify(payload, null, 2);
+      patch.dataset.dirty = '0';
+    }
+    out.innerHTML = '<small>Loaded current <b>'+sec+'</b> config into the editor.</small>';
+  }catch(e){
+    out.innerHTML = '<pre>'+e.message+'</pre>';
+  }
+}
+
+document.querySelectorAll('.secBtn').forEach(btn=>{
+  btn.addEventListener('click', ()=> loadSection(btn.getAttribute('data-sec')));
+});
+
+// mark editor dirty on manual edits
+const patchEl = document.getElementById('patch');
+if(patchEl){
+  patchEl.addEventListener('input', ()=> { patchEl.dataset.dirty = '1'; });
+}
+
+// Load full config tree into view/editor on page load
+loadSection('__full');
 
 async function setTarget(persist){
   const ip = document.getElementById('targetIp').value.trim();
