@@ -101,13 +101,13 @@ async function atomicWriteJson(filePath, obj) {
 }
 
 function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, setTimerInterval, logDir, logPrefixes }) {
-  const zipVersion = 'v13';
+    const zipVersion = 'v21';
   let pkgVersion = '';
   try {
     const pj = JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
     if (pj && pj.version) pkgVersion = pj.version;
   } catch (e) {}
-  const appVersion = pkgVersion ? `${zipVersion} (pkg v${pkgVersion})` : zipVersion;
+  const appVersion = pkgVersion ? `(pkg v${pkgVersion})` : '';
 
   const cfg = cfgRef();
   const adminCfg = cfg.admin || {};
@@ -321,24 +321,42 @@ app.get('/admin', (req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>p3-bridge admin</title>
+  <title>p3-bridge admin dashboard</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:16px;line-height:1.4}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    .card{border:1px solid #ddd;border-radius:10px;padding:12px;min-width:260px}
-    pre{background:#f6f8fa;padding:10px;border-radius:8px;overflow:auto}
-    button{padding:8px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer}
+    :root{--bd:#ddd;--bgpre:#f6f8fa;--muted:#666}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(0,0,0,0.08);position:sticky;top:0;background:#fff;z-index:10}
+    .brand{font-weight:800}
+    .brand .ver{opacity:0.7;font-weight:700;margin-left:8px}
+    .topbar-nav{display:flex;gap:8px;flex-wrap:wrap}
+    .navlink{padding:6px 10px;border-radius:10px;text-decoration:none;border:1px solid rgba(0,0,0,0.10);color:#111}
+    .navlink.active{border-color:rgba(0,0,0,0.25);background:rgba(0,0,0,0.03)}
+    .page{padding:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .card{border:1px solid var(--bd);border-radius:12px;padding:10px;min-width:220px}
+    pre{background:var(--bgpre);padding:10px;border-radius:10px;overflow:auto}
+    button{padding:7px 10px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer}
     button:hover{background:#f2f2f2}
-    input,textarea{width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #ccc}
-    small{color:#666}
-  
+    input,textarea,select{width:100%;box-sizing:border-box;padding:7px 8px;border-radius:10px;border:1px solid #ccc}
+    small{color:var(--muted)}
+    h2{margin:0 0 10px}
+    h3{margin:0 0 8px;font-size:14px}
+    /* keep existing helper classes */
     .codebox{max-height:240px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:12px;white-space:pre;}
-    .muted{color:#666}
+    .muted{color:var(--muted)}
     .small{font-size:12px}
+    
 </style>
 </head>
 <body>
-  <h2>p3-bridge admin <span class="muted">${appVersion}</span></h2>
+  <header class="topbar">
+    <div class="brand">p3-bridge admin <span class="ver">v21</span> <span class="muted">${appVersion}</span></div>
+    <nav class="topbar-nav">
+      <a class="navlink active" href="/admin">Dashboard</a>
+      <a class="navlink " href="/admin/logs">Logs</a>
+    </nav>
+  </header>
+  <main class="page">
   <div class="row">
     <div class="card">
       <h3>Status</h3>
@@ -348,7 +366,7 @@ app.get('/admin', (req, res) => {
     <div class="card">
       <h3>Actions</h3>
       <button id="restartBtn">Restart service</button>
-      <p><small>Restart triggers process exit; systemd should restart it if configured with Restart=always.</small></p>
+      <p><small>Restart exits the process; systemd restarts it.</small></p>
     </div>
     <div class="card" style="min-width:320px;max-width:360px">
       <h3>Target</h3>
@@ -403,41 +421,7 @@ app.get('/admin', (req, res) => {
   <pre id="raw"></pre>
 
 
-  <h3>Logs</h3>
-  <div class="row">
-    <div class="card" style="flex:1;min-width:320px">
-      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
-        <div style="min-width:180px;flex:0">
-          <label><small>Log</small></label>
-          <select id="logName" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #ccc">
-            <option value="main">main</option>
-            <option value="http">http</option>
-            <option value="json">json</option>
-            <option value="post-errors">post-errors</option>
-          </select>
-        </div>
-        <div style="min-width:120px;flex:0">
-          <label><small>Lines</small></label>
-          <input id="logLines" type="number" min="10" max="1000" value="200" />
-        </div>
-        <div style="min-width:220px;flex:0;align-self:flex-end">
-          <label style="display:flex;gap:8px;align-items:center;user-select:none">
-            <input id="hideTimerHttp" type="checkbox" />
-            <small>Hide timerWebhook (http log)</small>
-          </label>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button id="tailBtn">Tail</button>
-          <button id="clearLogBtn">Clear</button>
-          <button id="tailAutoBtn" data-on="0">Auto: off</button>
-        </div>
-        <small id="logHint"></small>
-      </div>
-      <pre id="logOut" style="max-height:420px"></pre>
-    </div>
-  </div>
-
-<script>
+  <script>
 async function api(path, opts){
   const r = await fetch(path, opts);
   const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
@@ -475,7 +459,8 @@ async function refresh(){
   }
 }
 
-document.getElementById('restartBtn').onclick = async () => {
+const __el_restartBtn = document.getElementById('restartBtn');
+if(__el_restartBtn) __el_restartBtn.onclick = async () => {
   if(!confirm('Restart p3-bridge now?')) return;
   try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
 };
@@ -494,8 +479,10 @@ async function apply(persist){
   }
 }
 
-document.getElementById('applyBtn').onclick = () => apply(false);
-document.getElementById('applyPersistBtn').onclick = () => apply(true);
+const __el_applyBtn = document.getElementById('applyBtn');
+if(__el_applyBtn) __el_applyBtn.onclick = () => apply(false);
+const __el_applyPersistBtn = document.getElementById('applyPersistBtn');
+if(__el_applyPersistBtn) __el_applyPersistBtn.onclick = () => apply(true);
 
 // Load current config into the JSON patch box (template for allowed changes)
 async function loadSection(sec){
@@ -602,8 +589,10 @@ function setAuto(on){
 }
 
 
-document.getElementById('setTargetBtn').onclick = () => setTarget(false);
-document.getElementById('setTargetPersistBtn').onclick = () => setTarget(true);
+const __el_setTargetBtn = document.getElementById('setTargetBtn');
+if(__el_setTargetBtn) __el_setTargetBtn.onclick = () => setTarget(false);
+const __el_setTargetPersistBtn = document.getElementById('setTargetPersistBtn');
+if(__el_setTargetPersistBtn) __el_setTargetPersistBtn.onclick = () => setTarget(true);
 
 async function setTimerInterval(persist){
   const val = Number(document.getElementById('timerIntervalSec').value);
@@ -621,11 +610,14 @@ async function setTimerInterval(persist){
   }
 }
 
-document.getElementById('setTimerBtn').onclick = () => setTimerInterval(false);
-document.getElementById('setTimerPersistBtn').onclick = () => setTimerInterval(true);
+const __el_setTimerBtn = document.getElementById('setTimerBtn');
+if(__el_setTimerBtn) __el_setTimerBtn.onclick = () => setTimerInterval(false);
+const __el_setTimerPersistBtn = document.getElementById('setTimerPersistBtn');
+if(__el_setTimerPersistBtn) __el_setTimerPersistBtn.onclick = () => setTimerInterval(true);
 
 
-document.getElementById('clearLogBtn').onclick = async () => {
+const __el_clearLogBtn = document.getElementById('clearLogBtn');
+if(__el_clearLogBtn) __el_clearLogBtn.onclick = async () => {
   const name = document.getElementById('logName').value;
   if(!confirm('Clear current ' + name + ' log file for today?')) return;
   try{
@@ -636,8 +628,10 @@ document.getElementById('clearLogBtn').onclick = async () => {
   }
 };
 
-document.getElementById('tailBtn').onclick = () => tailOnce();
-document.getElementById('tailAutoBtn').onclick = () => setAuto(document.getElementById('tailAutoBtn').dataset.on !== '1');
+const __el_tailBtn = document.getElementById('tailBtn');
+if(__el_tailBtn) __el_tailBtn.onclick = () => tailOnce();
+const __el_tailAutoBtn = document.getElementById('tailAutoBtn');
+if(__el_tailAutoBtn) __el_tailAutoBtn.onclick = () => setAuto(document.getElementById('tailAutoBtn').dataset.on !== '1');
 
 const logNameEl = document.getElementById('logName');
 const hideTimerEl = document.getElementById('hideTimerHttp');
@@ -653,8 +647,326 @@ if (logNameEl) logNameEl.onchange = () => { updateHideToggle(); tailOnce(); };
 if (hideTimerEl) hideTimerEl.onchange = () => tailOnce();
 updateHideToggle();
 
-refresh();
-setInterval(refresh, 2000);
+if (document.getElementById('status')) {
+  refresh();
+  setInterval(refresh, 2000);
+}
+</script>
+</body>
+</html>`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  });
+
+  app.get('/admin/logs', (req, res) => {
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>p3-bridge admin logs</title>
+  <style>
+    :root{--bd:#ddd;--bgpre:#f6f8fa;--muted:#666}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(0,0,0,0.08);position:sticky;top:0;background:#fff;z-index:10}
+    .brand{font-weight:800}
+    .brand .ver{opacity:0.7;font-weight:700;margin-left:8px}
+    .topbar-nav{display:flex;gap:8px;flex-wrap:wrap}
+    .navlink{padding:6px 10px;border-radius:10px;text-decoration:none;border:1px solid rgba(0,0,0,0.10);color:#111}
+    .navlink.active{border-color:rgba(0,0,0,0.25);background:rgba(0,0,0,0.03)}
+    .page{padding:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .card{border:1px solid var(--bd);border-radius:12px;padding:10px;min-width:220px}
+    pre{background:var(--bgpre);padding:10px;border-radius:10px;overflow:auto}
+    button{padding:7px 10px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer}
+    button:hover{background:#f2f2f2}
+    input,textarea,select{width:100%;box-sizing:border-box;padding:7px 8px;border-radius:10px;border:1px solid #ccc}
+    small{color:var(--muted)}
+    h2{margin:0 0 10px}
+    h3{margin:0 0 8px;font-size:14px}
+    /* keep existing helper classes */
+    .codebox{max-height:240px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:12px;white-space:pre;}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">p3-bridge admin <span class="ver">v21</span> <span class="muted">${appVersion}</span></div>
+    <nav class="topbar-nav">
+      <a class="navlink " href="/admin">Dashboard</a>
+      <a class="navlink active" href="/admin/logs">Logs</a>
+    </nav>
+  </header>
+  <main class="page">
+<h2 style="margin:0 0 10px">Logs</h2>
+  <div class="row">
+    <div class="card" style="flex:1;min-width:320px">
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="min-width:180px;flex:0">
+          <label><small>Log</small></label>
+          <select id="logName" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #ccc">
+            <option value="main">main</option>
+            <option value="http">http</option>
+            <option value="json">json</option>
+            <option value="post-errors">post-errors</option>
+          </select>
+        </div>
+        <div style="min-width:120px;flex:0">
+          <label><small>Lines</small></label>
+          <input id="logLines" type="number" min="10" max="1000" value="200" />
+        </div>
+        <div style="min-width:220px;flex:0;align-self:flex-end">
+          <label style="display:flex;gap:8px;align-items:center;user-select:none">
+            <input id="hideTimerHttp" type="checkbox" />
+            <small>Hide timerWebhook (http log)</small>
+          </label>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button id="tailBtn">Tail</button>
+          <button id="clearLogBtn">Clear</button>
+          <button id="tailAutoBtn" data-on="0">Auto: off</button>
+        </div>
+        <small id="logHint"></small>
+      </div>
+      <pre id="logOut" style="max-height:420px"></pre>
+    </div>
+  </div>
+
+
+</main>
+
+<script>
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
+  if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  return j;
+}
+function fmt(n){ return (n==null)?'—':String(n); }
+
+async function refresh(){
+  try{
+    const j = await api('/admin/api/status');
+    const s = j.state;
+    // populate target inputs if empty
+    const tip = document.getElementById('targetIp');
+    const tport = document.getElementById('targetPort');
+    if(tip && !tip.value) tip.value = (s.ip || '');
+    if(tport && !tport.value) tport.value = (s.port || '');
+    const tint = document.getElementById('timerIntervalSec');
+    if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
+
+    const lines = [];
+    lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
+    lines.push('<b>Mode:</b> ' + fmt(s.mode) + ' | <b>Target:</b> ' + fmt(s.ip) + ':' + fmt(s.port));
+    lines.push('<b>Transport:</b> ' + (s.tcpConnected ? 'TCP connected' : (s.mode==='tcp' ? 'TCP disconnected' : 'UDP listening')));
+    lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
+    lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
+    if (typeof s.timerOk !== 'undefined') {
+      lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
+    }
+    document.getElementById('status').innerHTML = lines.join('<br/>');
+    document.getElementById('updated').textContent = 'Updated ' + j.at;
+    document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
+  }catch(e){
+    document.getElementById('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+const __el_restartBtn = document.getElementById('restartBtn');
+if(__el_restartBtn) __el_restartBtn.onclick = async () => {
+  if(!confirm('Restart p3-bridge now?')) return;
+  try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
+};
+
+
+async function apply(persist){
+  let patch;
+  try{ patch = JSON.parse(document.getElementById('patch').value); }
+  catch(e){ alert('Patch JSON is invalid: ' + e.message); return; }
+  const url = '/admin/api/settings?persist=' + (persist ? 'true' : 'false');
+  try{
+    const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
+    document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
+  }catch(e){
+    document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
+  }
+}
+
+const __el_applyBtn = document.getElementById('applyBtn');
+if(__el_applyBtn) __el_applyBtn.onclick = () => apply(false);
+const __el_applyPersistBtn = document.getElementById('applyPersistBtn');
+if(__el_applyPersistBtn) __el_applyPersistBtn.onclick = () => apply(true);
+
+// Load current config into the JSON patch box (template for allowed changes)
+async function loadSection(sec){
+  const out = document.getElementById('applyResult');
+  out.textContent = '';
+  try{
+    const j = await api('/admin/api/settings');
+    const cfg = (j && j.config) ? j.config : {};
+    // Always show the full current config tree (read-only)
+    const cur = document.getElementById('configCurrent');
+    if(cur) cur.textContent = JSON.stringify(cfg, null, 2);
+
+    let payload = {};
+    if(sec === '__full'){
+      payload = cfg;
+    } else if(sec === 'decoder.reconnect'){
+      payload = { decoder: { reconnect: (cfg.decoder && cfg.decoder.reconnect) ? cfg.decoder.reconnect : {} } };
+    } else {
+      payload[sec] = (cfg && cfg[sec]) ? cfg[sec] : {};
+    }
+
+    const patch = document.getElementById('patch');
+    if(patch){
+      patch.value = JSON.stringify(payload, null, 2);
+      patch.dataset.dirty = '0';
+    }
+    out.innerHTML = '<small>Loaded current <b>'+sec+'</b> config into the editor.</small>';
+  }catch(e){
+    out.innerHTML = '<pre>'+e.message+'</pre>';
+  }
+}
+
+document.querySelectorAll('.secBtn').forEach(btn=>{
+  btn.addEventListener('click', ()=> loadSection(btn.getAttribute('data-sec')));
+});
+
+// mark editor dirty on manual edits
+const patchEl = document.getElementById('patch');
+if(patchEl){
+  patchEl.addEventListener('input', ()=> { patchEl.dataset.dirty = '1'; });
+}
+
+// Load full config tree into view/editor on page load
+loadSection('__full');
+
+async function setTarget(persist){
+  const ip = document.getElementById('targetIp').value.trim();
+  const port = Number(document.getElementById('targetPort').value);
+  const out = document.getElementById('targetResult');
+  out.textContent = '';
+  try{
+    const qs = [];
+    if(persist) qs.push('persist=true');
+
+    const url = '/admin/api/target' + (qs.length ? ('?' + qs.join('&')) : '');
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ip, port, persist })});
+    const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    out.innerHTML = '<small>Updated target to ' + ip + ':' + port + (persist ? ' (saved)' : '') + '</small>';
+  }catch(e){
+    out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
+  }
+}
+
+async function tailOnce(){
+  const name = document.getElementById('logName').value;
+  const lines = Number(document.getElementById('logLines').value) || 200;
+  const hint = document.getElementById('logHint');
+  const pre = document.getElementById('logOut');
+  hint.textContent = 'Loading…';
+  try{
+    const r = await fetch('/admin/api/log/tail?name=' + encodeURIComponent(name) + '&lines=' + encodeURIComponent(lines));
+    const t = await r.text();
+    if(!r.ok){
+      try{ const j = JSON.parse(t); throw new Error(j.error || ('HTTP '+r.status)); }catch(_){ throw new Error('HTTP '+r.status); }
+    }
+    // Optionally filter timer heartbeats from http log view
+    let out = t || '';
+    const hideTimer = (name === 'http') && document.getElementById('hideTimerHttp')?.checked;
+    if (hideTimer && out) {
+      const before = out.split('\\n');
+      const after = before.filter(line => !String(line).toLowerCase().includes('timerwebhook'));
+      out = after.join('\\n');
+    }
+    pre.textContent = out;
+    hint.textContent = 'Showing last ' + lines + ' lines of ' + name + ' (newest file)' + (hideTimer ? ' (timerWebhook filtered)' : '');
+    pre.scrollTop = pre.scrollHeight;
+  }catch(e){
+    hint.textContent = '';
+    pre.textContent = 'Error: ' + e.message;
+  }
+}
+
+let logTimer = null;
+function setAuto(on){
+  const btn = document.getElementById('tailAutoBtn');
+  btn.dataset.on = on ? '1' : '0';
+  btn.textContent = 'Auto: ' + (on ? 'on' : 'off');
+  if(logTimer){ clearInterval(logTimer); logTimer = null; }
+  if(on){
+    tailOnce();
+    logTimer = setInterval(tailOnce, 2000);
+  }
+}
+
+
+const __el_setTargetBtn = document.getElementById('setTargetBtn');
+if(__el_setTargetBtn) __el_setTargetBtn.onclick = () => setTarget(false);
+const __el_setTargetPersistBtn = document.getElementById('setTargetPersistBtn');
+if(__el_setTargetPersistBtn) __el_setTargetPersistBtn.onclick = () => setTarget(true);
+
+async function setTimerInterval(persist){
+  const val = Number(document.getElementById('timerIntervalSec').value);
+  const out = document.getElementById('timerResult');
+  out.textContent = '';
+  try{
+    if(!val || val < 5 || val > 3600) throw new Error('interval must be between 5 and 3600 seconds');
+    const url = '/admin/api/timer/interval' + (persist ? '?persist=true' : '');
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ intervalSec: val, persist })});
+    const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    out.innerHTML = '<small>Timer interval set to ' + val + 's' + (persist ? ' (saved)' : '') + '</small>';
+  }catch(e){
+    out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
+  }
+}
+
+const __el_setTimerBtn = document.getElementById('setTimerBtn');
+if(__el_setTimerBtn) __el_setTimerBtn.onclick = () => setTimerInterval(false);
+const __el_setTimerPersistBtn = document.getElementById('setTimerPersistBtn');
+if(__el_setTimerPersistBtn) __el_setTimerPersistBtn.onclick = () => setTimerInterval(true);
+
+
+const __el_clearLogBtn = document.getElementById('clearLogBtn');
+if(__el_clearLogBtn) __el_clearLogBtn.onclick = async () => {
+  const name = document.getElementById('logName').value;
+  if(!confirm('Clear current ' + name + ' log file for today?')) return;
+  try{
+    await api('/admin/api/log/clear?name=' + encodeURIComponent(name), {method:'POST'});
+    await tailOnce();
+  }catch(e){
+    alert(e.message);
+  }
+};
+
+const __el_tailBtn = document.getElementById('tailBtn');
+if(__el_tailBtn) __el_tailBtn.onclick = () => tailOnce();
+const __el_tailAutoBtn = document.getElementById('tailAutoBtn');
+if(__el_tailAutoBtn) __el_tailAutoBtn.onclick = () => setAuto(document.getElementById('tailAutoBtn').dataset.on !== '1');
+
+const logNameEl = document.getElementById('logName');
+const hideTimerEl = document.getElementById('hideTimerHttp');
+function updateHideToggle(){
+  const isHttp = (logNameEl && logNameEl.value === 'http');
+  if (!hideTimerEl) return;
+  hideTimerEl.disabled = !isHttp;
+  // visually deemphasize when not applicable
+  const wrap = hideTimerEl.closest('label');
+  if (wrap) wrap.style.opacity = isHttp ? '1' : '0.5';
+}
+if (logNameEl) logNameEl.onchange = () => { updateHideToggle(); tailOnce(); };
+if (hideTimerEl) hideTimerEl.onchange = () => tailOnce();
+updateHideToggle();
+
+if (document.getElementById('status')) {
+  refresh();
+  setInterval(refresh, 2000);
+}
 </script>
 </body>
 </html>`;
