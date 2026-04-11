@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const { execSync } = require('child_process');
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -101,13 +102,17 @@ async function atomicWriteJson(filePath, obj) {
 }
 
 function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, setTimerInterval, logDir, logPrefixes }) {
-    const zipVersion = 'v21';
   let pkgVersion = '';
   try {
     const pj = JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
     if (pj && pj.version) pkgVersion = pj.version;
   } catch (e) {}
-  const appVersion = pkgVersion ? `(pkg v${pkgVersion})` : '';
+  let gitRevCount = '';
+  let gitShortHash = '';
+  try { gitRevCount = execSync('git rev-list --count HEAD', { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch (_) {}
+  try { gitShortHash = execSync('git rev-parse --short HEAD', { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch (_) {}
+  const semanticVersion = gitRevCount ? `1.0.${gitRevCount}` : (pkgVersion || '1.0.0');
+  const buildVersion = gitShortHash ? `${semanticVersion} (${gitShortHash})` : semanticVersion;
 
   const cfg = cfgRef();
   const adminCfg = cfg.admin || {};
@@ -141,7 +146,7 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
   app.get('/healthz', (req, res) => res.json({ ok: true, at: nowIso() }));
 
   app.get('/admin/api/status', (req, res) => {
-    res.json({ ok: true, at: nowIso(), cfgPath, version: appVersion, state: state.snapshot() });
+    res.json({ ok: true, at: nowIso(), cfgPath, version: buildVersion, gitHash: gitShortHash || null, state: state.snapshot() });
   });
 
   app.get('/admin/api/settings', (req, res) => {
@@ -323,21 +328,21 @@ app.get('/admin', (req, res) => {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>p3-bridge admin dashboard</title>
   <style>
-    :root{--bd:#ddd;--bgpre:#f6f8fa;--muted:#666}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35}
-    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(0,0,0,0.08);position:sticky;top:0;background:#fff;z-index:10}
-    .brand{font-weight:800}
-    .brand .ver{opacity:0.7;font-weight:700;margin-left:8px}
+    :root{--bg:#f3f6fb;--panel:#ffffff;--bd:#d7dfec;--muted:#5f6b7a;--ink:#111827;--accent:#2563eb;--accent2:#4f46e5;--ok:#0f766e}
+    body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35;background:linear-gradient(180deg,#eef3ff 0,#f8fbff 180px,var(--bg) 181px);color:var(--ink)}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(37,99,235,0.18);position:sticky;top:0;background:rgba(255,255,255,0.88);backdrop-filter:blur(8px);z-index:10}
+    .brand{font-weight:800;display:flex;gap:8px;align-items:center}
+    .brand .pill{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(37,99,235,0.12);color:var(--accent);border:1px solid rgba(37,99,235,0.28)}
     .topbar-nav{display:flex;gap:8px;flex-wrap:wrap}
-    .navlink{padding:6px 10px;border-radius:10px;text-decoration:none;border:1px solid rgba(0,0,0,0.10);color:#111}
-    .navlink.active{border-color:rgba(0,0,0,0.25);background:rgba(0,0,0,0.03)}
+    .navlink{padding:7px 12px;border-radius:10px;text-decoration:none;border:1px solid rgba(37,99,235,0.20);color:#123; background:#fff}
+    .navlink.active{border-color:rgba(37,99,235,0.4);background:rgba(37,99,235,0.08);color:var(--accent)}
     .page{padding:14px}
     .row{display:flex;gap:10px;flex-wrap:wrap}
-    .card{border:1px solid var(--bd);border-radius:12px;padding:10px;min-width:220px}
-    pre{background:var(--bgpre);padding:10px;border-radius:10px;overflow:auto}
-    button{padding:7px 10px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer}
-    button:hover{background:#f2f2f2}
-    input,textarea,select{width:100%;box-sizing:border-box;padding:7px 8px;border-radius:10px;border:1px solid #ccc}
+    .card{border:1px solid var(--bd);border-radius:14px;padding:12px;min-width:220px;background:var(--panel);box-shadow:0 8px 24px rgba(31,41,55,0.06)}
+    pre{background:#f7faff;padding:10px;border-radius:10px;overflow:auto;border:1px solid #e3ebfb}
+    button{padding:8px 11px;border-radius:10px;border:1px solid #b8c7ea;background:#fff;cursor:pointer;font-weight:600}
+    button:hover{background:#eef4ff}
+    input,textarea,select{width:100%;box-sizing:border-box;padding:8px 9px;border-radius:10px;border:1px solid #c8d5ef;background:#fff}
     small{color:var(--muted)}
     h2{margin:0 0 10px}
     h3{margin:0 0 8px;font-size:14px}
@@ -350,7 +355,7 @@ app.get('/admin', (req, res) => {
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">p3-bridge admin <span class="ver">v21</span> <span class="muted">${appVersion}</span></div>
+    <div class="brand">p3-bridge admin <span class="pill">v${semanticVersion}</span> <span class="pill">git ${gitShortHash || 'n/a'}</span></div>
     <nav class="topbar-nav">
       <a class="navlink active" href="/admin">Dashboard</a>
       <a class="navlink " href="/admin/logs">Logs</a>
@@ -444,6 +449,7 @@ async function refresh(){
 
     const lines = [];
     lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
+    lines.push('<b>Build:</b> ' + fmt(j.version));
     lines.push('<b>Mode:</b> ' + fmt(s.mode) + ' | <b>Target:</b> ' + fmt(s.ip) + ':' + fmt(s.port));
     lines.push('<b>Transport:</b> ' + (s.tcpConnected ? 'TCP connected' : (s.mode==='tcp' ? 'TCP disconnected' : 'UDP listening')));
     lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
@@ -666,21 +672,21 @@ if (document.getElementById('status')) {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>p3-bridge admin logs</title>
   <style>
-    :root{--bd:#ddd;--bgpre:#f6f8fa;--muted:#666}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35}
-    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(0,0,0,0.08);position:sticky;top:0;background:#fff;z-index:10}
-    .brand{font-weight:800}
-    .brand .ver{opacity:0.7;font-weight:700;margin-left:8px}
+    :root{--bg:#f3f6fb;--panel:#ffffff;--bd:#d7dfec;--muted:#5f6b7a;--ink:#111827;--accent:#2563eb;--accent2:#4f46e5}
+    body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35;background:linear-gradient(180deg,#eef3ff 0,#f8fbff 180px,var(--bg) 181px);color:var(--ink)}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(37,99,235,0.18);position:sticky;top:0;background:rgba(255,255,255,0.88);backdrop-filter:blur(8px);z-index:10}
+    .brand{font-weight:800;display:flex;gap:8px;align-items:center}
+    .brand .pill{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(37,99,235,0.12);color:var(--accent);border:1px solid rgba(37,99,235,0.28)}
     .topbar-nav{display:flex;gap:8px;flex-wrap:wrap}
-    .navlink{padding:6px 10px;border-radius:10px;text-decoration:none;border:1px solid rgba(0,0,0,0.10);color:#111}
-    .navlink.active{border-color:rgba(0,0,0,0.25);background:rgba(0,0,0,0.03)}
+    .navlink{padding:7px 12px;border-radius:10px;text-decoration:none;border:1px solid rgba(37,99,235,0.20);color:#123; background:#fff}
+    .navlink.active{border-color:rgba(37,99,235,0.4);background:rgba(37,99,235,0.08);color:var(--accent)}
     .page{padding:14px}
     .row{display:flex;gap:10px;flex-wrap:wrap}
-    .card{border:1px solid var(--bd);border-radius:12px;padding:10px;min-width:220px}
-    pre{background:var(--bgpre);padding:10px;border-radius:10px;overflow:auto}
-    button{padding:7px 10px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer}
-    button:hover{background:#f2f2f2}
-    input,textarea,select{width:100%;box-sizing:border-box;padding:7px 8px;border-radius:10px;border:1px solid #ccc}
+    .card{border:1px solid var(--bd);border-radius:14px;padding:12px;min-width:220px;background:var(--panel);box-shadow:0 8px 24px rgba(31,41,55,0.06)}
+    pre{background:#f7faff;padding:10px;border-radius:10px;overflow:auto;border:1px solid #e3ebfb}
+    button{padding:8px 11px;border-radius:10px;border:1px solid #b8c7ea;background:#fff;cursor:pointer;font-weight:600}
+    button:hover{background:#eef4ff}
+    input,textarea,select{width:100%;box-sizing:border-box;padding:8px 9px;border-radius:10px;border:1px solid #c8d5ef;background:#fff}
     small{color:var(--muted)}
     h2{margin:0 0 10px}
     h3{margin:0 0 8px;font-size:14px}
@@ -693,7 +699,7 @@ if (document.getElementById('status')) {
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">p3-bridge admin <span class="ver">v21</span> <span class="muted">${appVersion}</span></div>
+    <div class="brand">p3-bridge admin <span class="pill">v${semanticVersion}</span> <span class="pill">git ${gitShortHash || 'n/a'}</span></div>
     <nav class="topbar-nav">
       <a class="navlink " href="/admin">Dashboard</a>
       <a class="navlink active" href="/admin/logs">Logs</a>
