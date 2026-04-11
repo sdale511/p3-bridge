@@ -1,13 +1,17 @@
 {
   "defaults": {
     "mode": "tcp",
-    "tcpHost": "192.168.4.75",
     "tcpPort": 5403,
-    "udpPort": 5303,
-    "bindAddress": "0.0.0.0",
+    "udpListenPort": 5303,
+    "udpSendPort": 5403,
+    "mode": "tcp",
+    "tcpHosts:: [
+      "192.168.4.75"
+    ],
     "connectTimeoutMs": 8000
   },
   "post": {
+    "enabled": true
     "baseUrl": "https://regatta-flow-26df5635.base44.app",
     "path": "/api/apps/68c848434f9c971726df5635/functions/mylapsWebhook",
     "method": "POST",
@@ -19,7 +23,6 @@
     "headers": {
       "Content-Type": "application/json"
     },
-    "enabled": true
   },
   "logging": {
     "dir": "./logs",
