@@ -11,6 +11,32 @@ function safeInt(v, d) {
   return Number.isFinite(n) ? n : d;
 }
 
+function normalizeTargetEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(.+):(\d+)$/);
+    if (!match) return null;
+    const port = safeInt(match[2], null);
+    if (!port || port < 1 || port > 65535) return null;
+    return { ip: match[1].trim(), port };
+  }
+  if (typeof entry !== 'object') return null;
+  const ip = (entry.ip || entry.host || '').toString().trim();
+  const port = safeInt(entry.port, null);
+  if (!ip || !port || port < 1 || port > 65535) return null;
+  return { ip, port };
+}
+
+function normalizeTargetList(body) {
+  if (Array.isArray(body?.targets)) {
+    return body.targets.map(normalizeTargetEntry).filter(Boolean);
+  }
+  const legacy = normalizeTargetEntry({ ip: body?.ip, port: body?.port });
+  return legacy ? [legacy] : [];
+}
+
 async function findNewestLogFile(dir, prefix) {
   try {
     const files = await fs.promises.readdir(dir);
@@ -53,6 +79,15 @@ function getByPath(obj, p) {
     cur = cur[part];
   }
   return cur;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function setByPath(obj, p, value) {
@@ -217,32 +252,31 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
 
   
   
-  // Update decoder target (in-memory), optionally persist defaults.tcpHost/tcpPort to config.json
+  // Update decoder targets (in-memory), optionally persist defaults.tcpHosts to config.json
   app.put('/admin/api/target', async (req, res) => {
     try {
       const body = req.body || {};
-      const ip = (body.ip || '').toString().trim();
-      const port = safeInt(body.port, null);
       const persist = (req.query.persist === 'true' || body.persist === true);
+      const targets = normalizeTargetList(body);
 
-      if (!ip) return res.status(400).json({ ok: false, error: 'ip required' });
-      if (!port || port < 1 || port > 65535) return res.status(400).json({ ok: false, error: 'valid port required' });
+      if (targets.length === 0) return res.status(400).json({ ok: false, error: 'at least one valid target is required' });
 
       // Update live config defaults
       const c = cfgRef();
       c.defaults = c.defaults || {};
-      c.defaults.tcpHost = ip;
-      c.defaults.tcpPort = port;
+      c.defaults.tcpHosts = targets.map((target) => ({ ip: target.ip, port: target.port }));
+      delete c.defaults.tcpHost;
+      c.defaults.tcpPort = targets[0].port;
 
       if (persist) {
         await atomicWriteJson(cfgPath, c);
       }
 
       if (typeof setTarget === 'function') {
-        setTarget({ ip, port });
+        setTarget({ targets });
       }
 
-      res.json({ ok: true, at: nowIso(), ip, port, persist });
+      res.json({ ok: true, at: nowIso(), targets, persist });
     } catch (e) {
       logger.errorMeta('Admin target update failed', { message: e?.message });
       res.status(400).json({ ok: false, error: e?.message || 'target update failed' });
@@ -374,16 +408,14 @@ app.get('/admin', (req, res) => {
       <p><small>Restart exits the process; systemd restarts it.</small></p>
     </div>
     <div class="card" style="min-width:320px;max-width:360px">
-      <h3>Target</h3>
-      <label><small>Decoder IP</small></label>
-      <input id="targetIp" placeholder="e.g. 192.168.1.50" />
-      <label style="margin-top:6px;display:block"><small>Port</small></label>
-      <input id="targetPort" type="number" min="1" max="65535" placeholder="e.g. 5403" />
+      <h3>Targets</h3>
+      <label><small>Decoder targets</small></label>
+      <textarea id="targetList" rows="5" spellcheck="false" placeholder="192.168.1.50:5403&#10;192.168.1.51:5404"></textarea>
       <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
         <button id="setTargetBtn">Set</button>
         <button id="setTargetPersistBtn">Set and Save</button>
       </div>
-      <small>“Set” changes the in-memory target immediately (reconnects). “Set and Save” also writes defaults.tcpHost/tcpPort to config.json.</small>
+      <small>Enter one <code>ip:port</code> target per line. “Set” updates the in-memory target list immediately. “Set and Save” also writes <code>defaults.tcpHosts</code> to config.json.</small>
       <div id="targetResult"></div>
     </div>
     <div class="card" style="min-width:260px;max-width:320px">
@@ -434,24 +466,64 @@ async function api(path, opts){
   return j;
 }
 function fmt(n){ return (n==null)?'—':String(n); }
+function escapeHtml(value){
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function targetRows(s){
+  const targets = Array.isArray(s.targets) && s.targets.length
+    ? s.targets
+    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+  const label = targets.length > 1 ? 'Targets' : 'Target';
+  const body = targets.length
+    ? targets.map((target) => {
+        const status = target.status || (s.tcpConnected ? 'connected' : 'disconnected');
+        return escapeHtml(fmt(target.ip)) + ':' + escapeHtml(fmt(target.port)) + ' <span class="muted">(' + escapeHtml(status) + ')</span>';
+      }).join('<br/>')
+    : '—';
+  return '<b>' + label + ':</b><br/>' + body;
+}
+function targetListValue(s){
+  const targets = Array.isArray(s.targets) && s.targets.length
+    ? s.targets
+    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+  return targets.map((target) => fmt(target.ip) + ':' + fmt(target.port)).join('\\n');
+}
+function parseTargets(text){
+  return String(text || '')
+    .split(/\\r?\\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const idx = line.lastIndexOf(':');
+      if (idx <= 0 || idx === line.length - 1) throw new Error('Each target must be in ip:port format');
+      const ip = line.slice(0, idx).trim();
+      const port = Number(line.slice(idx + 1).trim());
+      if (!ip) throw new Error('Target IP is required');
+      if (!port || port < 1 || port > 65535) throw new Error('Target port must be between 1 and 65535');
+      return { ip, port };
+    });
+}
 
 async function refresh(){
   try{
     const j = await api('/admin/api/status');
     const s = j.state;
     // populate target inputs if empty
-    const tip = document.getElementById('targetIp');
-    const tport = document.getElementById('targetPort');
-    if(tip && !tip.value) tip.value = (s.ip || '');
-    if(tport && !tport.value) tport.value = (s.port || '');
+    const tlist = document.getElementById('targetList');
+    if(tlist && !tlist.value) tlist.value = targetListValue(s);
     const tint = document.getElementById('timerIntervalSec');
     if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
 
     const lines = [];
     lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
     lines.push('<b>Build:</b> ' + fmt(j.version));
-    lines.push('<b>Mode:</b> ' + fmt(s.mode) + ' | <b>Target:</b> ' + fmt(s.ip) + ':' + fmt(s.port));
-    lines.push('<b>Transport:</b> ' + (s.tcpConnected ? 'TCP connected' : (s.mode==='tcp' ? 'TCP disconnected' : 'UDP listening')));
+    lines.push('<b>Mode:</b> ' + fmt(s.mode));
+    lines.push(targetRows(s));
     lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
     lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
     if (typeof s.timerOk !== 'undefined') {
@@ -480,6 +552,7 @@ async function apply(persist){
   try{
     const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
     document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
+    if(persist) window.location.reload();
   }catch(e){
     document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
   }
@@ -535,19 +608,20 @@ if(patchEl){
 loadSection('__full');
 
 async function setTarget(persist){
-  const ip = document.getElementById('targetIp').value.trim();
-  const port = Number(document.getElementById('targetPort').value);
   const out = document.getElementById('targetResult');
   out.textContent = '';
   try{
+    const targets = parseTargets(document.getElementById('targetList').value);
+    if(!targets.length) throw new Error('Enter at least one target');
     const qs = [];
     if(persist) qs.push('persist=true');
 
     const url = '/admin/api/target' + (qs.length ? ('?' + qs.join('&')) : '');
-    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ip, port, persist })});
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ targets, persist })});
     const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
     if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-    out.innerHTML = '<small>Updated target to ' + ip + ':' + port + (persist ? ' (saved)' : '') + '</small>';
+    out.innerHTML = '<small>Updated ' + targets.length + ' target' + (targets.length === 1 ? '' : 's') + (persist ? ' (saved)' : '') + '</small>';
+    if(persist) window.location.reload();
   }catch(e){
     out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
   }
@@ -611,6 +685,7 @@ async function setTimerInterval(persist){
     const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
     if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
     out.innerHTML = '<small>Timer interval set to ' + val + 's' + (persist ? ' (saved)' : '') + '</small>';
+    if(persist) window.location.reload();
   }catch(e){
     out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
   }
@@ -751,23 +826,63 @@ async function api(path, opts){
   return j;
 }
 function fmt(n){ return (n==null)?'—':String(n); }
+function escapeHtml(value){
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function targetRows(s){
+  const targets = Array.isArray(s.targets) && s.targets.length
+    ? s.targets
+    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+  const label = targets.length > 1 ? 'Targets' : 'Target';
+  const body = targets.length
+    ? targets.map((target) => {
+        const status = target.status || (s.tcpConnected ? 'connected' : 'disconnected');
+        return escapeHtml(fmt(target.ip)) + ':' + escapeHtml(fmt(target.port)) + ' <span class="muted">(' + escapeHtml(status) + ')</span>';
+      }).join('<br/>')
+    : '—';
+  return '<b>' + label + ':</b><br/>' + body;
+}
+function targetListValue(s){
+  const targets = Array.isArray(s.targets) && s.targets.length
+    ? s.targets
+    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+  return targets.map((target) => fmt(target.ip) + ':' + fmt(target.port)).join('\\n');
+}
+function parseTargets(text){
+  return String(text || '')
+    .split(/\\r?\\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const idx = line.lastIndexOf(':');
+      if (idx <= 0 || idx === line.length - 1) throw new Error('Each target must be in ip:port format');
+      const ip = line.slice(0, idx).trim();
+      const port = Number(line.slice(idx + 1).trim());
+      if (!ip) throw new Error('Target IP is required');
+      if (!port || port < 1 || port > 65535) throw new Error('Target port must be between 1 and 65535');
+      return { ip, port };
+    });
+}
 
 async function refresh(){
   try{
     const j = await api('/admin/api/status');
     const s = j.state;
     // populate target inputs if empty
-    const tip = document.getElementById('targetIp');
-    const tport = document.getElementById('targetPort');
-    if(tip && !tip.value) tip.value = (s.ip || '');
-    if(tport && !tport.value) tport.value = (s.port || '');
+    const tlist = document.getElementById('targetList');
+    if(tlist && !tlist.value) tlist.value = targetListValue(s);
     const tint = document.getElementById('timerIntervalSec');
     if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
 
     const lines = [];
     lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
-    lines.push('<b>Mode:</b> ' + fmt(s.mode) + ' | <b>Target:</b> ' + fmt(s.ip) + ':' + fmt(s.port));
-    lines.push('<b>Transport:</b> ' + (s.tcpConnected ? 'TCP connected' : (s.mode==='tcp' ? 'TCP disconnected' : 'UDP listening')));
+    lines.push('<b>Mode:</b> ' + fmt(s.mode));
+    lines.push(targetRows(s));
     lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
     lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
     if (typeof s.timerOk !== 'undefined') {
@@ -796,6 +911,7 @@ async function apply(persist){
   try{
     const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
     document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
+    if(persist) window.location.reload();
   }catch(e){
     document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
   }
@@ -851,19 +967,20 @@ if(patchEl){
 loadSection('__full');
 
 async function setTarget(persist){
-  const ip = document.getElementById('targetIp').value.trim();
-  const port = Number(document.getElementById('targetPort').value);
   const out = document.getElementById('targetResult');
   out.textContent = '';
   try{
+    const targets = parseTargets(document.getElementById('targetList').value);
+    if(!targets.length) throw new Error('Enter at least one target');
     const qs = [];
     if(persist) qs.push('persist=true');
 
     const url = '/admin/api/target' + (qs.length ? ('?' + qs.join('&')) : '');
-    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ip, port, persist })});
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ targets, persist })});
     const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
     if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-    out.innerHTML = '<small>Updated target to ' + ip + ':' + port + (persist ? ' (saved)' : '') + '</small>';
+    out.innerHTML = '<small>Updated ' + targets.length + ' target' + (targets.length === 1 ? '' : 's') + (persist ? ' (saved)' : '') + '</small>';
+    if(persist) window.location.reload();
   }catch(e){
     out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
   }
@@ -927,6 +1044,7 @@ async function setTimerInterval(persist){
     const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
     if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
     out.innerHTML = '<small>Timer interval set to ' + val + 's' + (persist ? ' (saved)' : '') + '</small>';
+    if(persist) window.location.reload();
   }catch(e){
     out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
   }

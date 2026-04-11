@@ -42,6 +42,16 @@ function normalizeTcpTargets(cfg, cliIp, cliPort) {
   return [];
 }
 
+function syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort) {
+  const stateIp = mode === 'tcp' ? tcpTargets.map((t) => t.ip).join(',') : udpTargetIp;
+  const statePort = mode === 'tcp'
+    ? (tcpTargets.length === 1 ? tcpTargets[0].port : null)
+    : udpTargetPort;
+  state.setBase({ mode, ip: stateIp, port: statePort });
+  state.setTargets(mode === 'tcp' ? tcpTargets : [{ ip: udpTargetIp, port: udpTargetPort }]);
+  state.setTcpTargetsTotal(mode === 'tcp' ? tcpTargets.length : 0);
+}
+
 async function main() {
   const argv = yargs(hideBin(process.argv))
     .scriptName('p3-bridge')
@@ -118,12 +128,7 @@ async function main() {
 
 
   const state = createState();
-  const stateIp = mode === 'tcp' ? tcpTargets.map((t) => t.ip).join(',') : udpTargetIp;
-  const statePort = mode === 'tcp'
-    ? (tcpTargets.length === 1 ? tcpTargets[0].port : null)
-    : udpTargetPort;
-  state.setBase({ mode, ip: stateIp, port: statePort });
-  state.setTcpTargetsTotal(mode === 'tcp' ? tcpTargets.length : 0);
+  syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort);
 
   let adminHandle = null;
 
@@ -131,28 +136,32 @@ async function main() {
   const tcpClients = new Map();
   let udpSocket = null;
   let stopping = false;
+  let connectTcpClient = null;
+  let stopTcpClient = null;
+  let resyncTcpClients = null;
 
   const requestRestart = (reason) => {
     void gracefulShutdown(reason || 'restart', 0, true);
   };
 
-  const setTarget = ({ ip, port }) => {
+  const setTarget = ({ targets }) => {
     if (mode !== 'tcp') return;
-    if (tcpTargets.length === 0) return;
-    const first = tcpTargets[0];
-    if (ip) first.ip = ip;
-    if (port) first.port = Number(port) || first.port;
-    state.setBase({
-      mode,
-      ip: tcpTargets.map((t) => t.ip).join(','),
-      port: tcpTargets.length === 1 ? tcpTargets[0].port : null
-    });
+    const nextTargets = Array.isArray(targets)
+      ? targets
+        .map((target) => ({
+          ip: String(target?.ip || '').trim(),
+          port: Number(target?.port) || null
+        }))
+        .filter((target) => target.ip && target.port)
+      : [];
+    if (nextTargets.length === 0) return;
 
-    // Force reconnects so the new target takes effect immediately.
-    for (const client of tcpClients.values()) {
-      try {
-        if (client.socket) client.socket.destroy(new Error('admin target change'));
-      } catch (_) {}
+    tcpTargets.length = 0;
+    nextTargets.forEach((target) => tcpTargets.push(target));
+    syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort);
+
+    if (typeof resyncTcpClients === 'function') {
+      resyncTcpClients();
     }
   };
 
@@ -466,6 +475,8 @@ async function main() {
       return Math.max(0, Math.round(delay));
     };
 
+    const clientKey = (target) => `${target.ip}:${target.port}`;
+
     const scheduleReconnect = (client, reason) => {
       if (stopping) return;
       client.attempt += 1;
@@ -473,10 +484,10 @@ async function main() {
       state.onTcpReconnectScheduled(client.attempt);
       logger.warnMeta('TCP reconnect scheduled', { ip: client.ip, port: client.port, attempt: client.attempt, delayMs, reason });
       if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
-      client.reconnectTimer = setTimeout(() => connectOnce(client), delayMs);
+      client.reconnectTimer = setTimeout(() => connectTcpClient(client), delayMs);
     };
 
-    const connectOnce = (client) => {
+    connectTcpClient = (client) => {
       if (stopping) return;
       if (client.reconnectTimer) { clearTimeout(client.reconnectTimer); client.reconnectTimer = null; }
       if (client.socket) {
@@ -499,7 +510,8 @@ async function main() {
       client.socket.on('connect', () => {
         clearTimeout(t);
         client.attempt = 0;
-        state.onTcpConnect();
+        client.connected = true;
+        state.onTcpConnect({ ip: client.ip, port: client.port });
         logger.infoMeta('TCP connected', { ip: client.ip, port: client.port });
       });
 
@@ -512,36 +524,68 @@ async function main() {
 
       client.socket.on('close', (hadError) => {
         clearTimeout(t);
-        state.onTcpDisconnect();
+        if (client.connected) {
+          client.connected = false;
+          state.onTcpDisconnect({ ip: client.ip, port: client.port });
+        }
         logger.warnMeta('TCP connection closed', { ip: client.ip, port: client.port, hadError });
         scheduleReconnect(client, 'close');
       });
     };
 
-    tcpTargets.forEach((target, idx) => {
-      const source = `${target.ip}:${target.port}`;
-      const client = {
-        id: idx,
-        ip: target.ip,
-        port: target.port,
-        attempt: 0,
-        socket: null,
-        reconnectTimer: null,
-        decoder: new StreamP3Decoder((parsed) => handleParsedRecord(parsed, source))
-      };
-      tcpClients.set(source, client);
-      connectOnce(client);
-    });
+    stopTcpClient = (client, reason = 'admin target change') => {
+      if (!client) return;
+      try {
+        if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+        client.reconnectTimer = null;
+      } catch (_) {}
+      try {
+        if (client.socket) {
+          try { client.socket.removeAllListeners(); } catch (_) {}
+          try { client.socket.destroy(new Error(reason)); } catch (_) {}
+        }
+      } catch (_) {}
+      if (client.connected) {
+        client.connected = false;
+        state.onTcpDisconnect({ ip: client.ip, port: client.port });
+      }
+      client.socket = null;
+    };
+
+    resyncTcpClients = () => {
+      const wanted = new Set(tcpTargets.map(clientKey));
+
+      for (const [key, client] of tcpClients.entries()) {
+        if (!wanted.has(key)) {
+          stopTcpClient(client);
+          tcpClients.delete(key);
+        }
+      }
+
+      tcpTargets.forEach((target, idx) => {
+        const key = clientKey(target);
+        if (tcpClients.has(key)) return;
+        const client = {
+          id: idx,
+          ip: target.ip,
+          port: target.port,
+          attempt: 0,
+          socket: null,
+          reconnectTimer: null,
+          connected: false,
+          decoder: new StreamP3Decoder((parsed) => handleParsedRecord(parsed, `${target.ip}:${target.port}`))
+        };
+        tcpClients.set(key, client);
+        connectTcpClient(client);
+      });
+    };
+
+    resyncTcpClients();
 
     process.on('SIGINT', () => {
       stopping = true;
       for (const client of tcpClients.values()) {
-        if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
-        if (client.socket) {
-          try { client.socket.removeAllListeners(); } catch (_) {}
-          try { client.socket.destroy(); } catch (_) {}
-          client.socket = null;
-        }
+        stopTcpClient(client, 'shutdown');
       }
       logger.info('Shutting down (SIGINT)');
       process.exit(0);

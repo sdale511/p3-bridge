@@ -6,6 +6,7 @@ function createState() {
     mode: null,
     ip: null,
     port: null,
+    targets: [],
 
     tcpConnected: false,
     tcpConnectedCount: 0,
@@ -47,18 +48,41 @@ function createState() {
       s.ip = ip;
       s.port = port;
     },
+    setTargets(targets) {
+      s.targets = Array.isArray(targets)
+        ? targets
+          .filter((target) => target && typeof target === 'object' && target.ip)
+          .map((target) => ({
+            ip: String(target.ip),
+            port: Number(target.port) || null,
+            status: target.status || 'disconnected'
+          }))
+        : [];
+    },
+    setTargetStatus({ ip, port, status }) {
+      const ipStr = ip == null ? null : String(ip);
+      const portNum = Number(port) || null;
+      const target = s.targets.find((item) => item.ip === ipStr && (Number(item.port) || null) === portNum);
+      if (target) target.status = status || 'disconnected';
+    },
     setTcpTargetsTotal(total) {
       s.tcpTargetsTotal = Math.max(0, Number(total) || 0);
     },
-    onTcpConnect() {
+    onTcpConnect(target) {
       s.tcpConnectedCount += 1;
       s.tcpConnected = s.tcpConnectedCount > 0;
       s.tcpLastConnectAt = new Date().toISOString();
+      if (target) s.targets.forEach((item) => {
+        if (item.ip === String(target.ip) && (Number(item.port) || null) === (Number(target.port) || null)) item.status = 'connected';
+      });
     },
-    onTcpDisconnect() {
+    onTcpDisconnect(target) {
       s.tcpConnectedCount = Math.max(0, s.tcpConnectedCount - 1);
       s.tcpConnected = s.tcpConnectedCount > 0;
       s.tcpLastDisconnectAt = new Date().toISOString();
+      if (target) s.targets.forEach((item) => {
+        if (item.ip === String(target.ip) && (Number(item.port) || null) === (Number(target.port) || null)) item.status = 'disconnected';
+      });
     },
     onTcpReconnectScheduled(attempt) {
       s.tcpReconnectAttempt = attempt;
