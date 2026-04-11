@@ -8,6 +8,8 @@ function createState() {
     port: null,
 
     tcpConnected: false,
+    tcpConnectedCount: 0,
+    tcpTargetsTotal: 0,
     tcpLastConnectAt: null,
     tcpLastDisconnectAt: null,
     tcpReconnectAttempt: 0,
@@ -45,12 +47,17 @@ function createState() {
       s.ip = ip;
       s.port = port;
     },
+    setTcpTargetsTotal(total) {
+      s.tcpTargetsTotal = Math.max(0, Number(total) || 0);
+    },
     onTcpConnect() {
-      s.tcpConnected = true;
+      s.tcpConnectedCount += 1;
+      s.tcpConnected = s.tcpConnectedCount > 0;
       s.tcpLastConnectAt = new Date().toISOString();
     },
     onTcpDisconnect() {
-      s.tcpConnected = false;
+      s.tcpConnectedCount = Math.max(0, s.tcpConnectedCount - 1);
+      s.tcpConnected = s.tcpConnectedCount > 0;
       s.tcpLastDisconnectAt = new Date().toISOString();
     },
     onTcpReconnectScheduled(attempt) {
