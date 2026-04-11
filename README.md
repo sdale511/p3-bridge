@@ -13,7 +13,7 @@ npm install
 
 You can pass the decoder IP/port on the command line, **or** set defaults in `config.json` so no CLI args are required.
 
-TCP (decoder is server, default P3 port 5403):
+TCP (decoder/transcoder is server, default P3 port 5403):
 
 ```bash
 node src/index.js 192.168.1.89
@@ -35,6 +35,22 @@ node src/index.js
 ```json
 {
   "defaults": { "mode": "tcp", "tcpHost": "192.168.1.89", "tcpPort": 5403 }
+}
+```
+
+For multiple TCP targets (for example, multiple MYLAPS transcoders), use `defaults.tcpHosts`:
+
+```json
+{
+  "defaults": {
+    "mode": "tcp",
+    "tcpPort": 5403,
+    "tcpHosts": [
+      "192.168.1.89",
+      "192.168.1.90",
+      { "ip": "192.168.1.91", "port": 5404 }
+    ]
+  }
 }
 ```
 
@@ -107,7 +123,7 @@ Open in a browser on the same network:
 
 The page auto-refreshes every 2 seconds and shows:
 
-- uptime + mode + target ip:port
+- uptime + mode + target ip(s)
 - TCP connected / UDP listening state
 - message counters (total/ok/parseErr/suppressed)
 - post counters (ok/fail/queued + queue size)

@@ -21,6 +21,27 @@ function pickPort(mode, cfg, cliPort) {
   return cfg.defaults?.tcpPort ?? 5403;
 }
 
+function normalizeTcpTargets(cfg, cliIp, cliPort) {
+  if (cliIp) return [{ ip: cliIp, port: cliPort ?? (cfg.defaults?.tcpPort ?? 5403) }];
+
+  const fromList = Array.isArray(cfg.defaults?.tcpHosts) ? cfg.defaults.tcpHosts : [];
+  const parsed = fromList
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return { ip: entry, port: cfg.defaults?.tcpPort ?? 5403 };
+      }
+      if (!entry || typeof entry !== 'object') return null;
+      const ip = entry.ip || entry.host;
+      if (!ip) return null;
+      return { ip, port: Number(entry.port) || (cfg.defaults?.tcpPort ?? 5403) };
+    })
+    .filter(Boolean);
+  if (parsed.length > 0) return parsed;
+
+  if (cfg.defaults?.tcpHost) return [{ ip: cfg.defaults.tcpHost, port: cfg.defaults?.tcpPort ?? 5403 }];
+  return [];
+}
+
 async function main() {
   const argv = yargs(hideBin(process.argv))
     .scriptName('p3-bridge')
@@ -45,11 +66,18 @@ async function main() {
   const { cfg, path: cfgPath } = loadConfig(argv.config);
 
   const mode = argv.mode || (argv.udp ? 'udp' : (argv.tcp ? 'tcp' : (cfg.defaults?.mode || 'tcp')));
-  let targetIp = argv._[0] || cfg.defaults?.tcpHost || cfg.defaults?.udpBindIp || cfg.defaults?.bindIp;
-  let targetPort = pickPort(mode, cfg, argv._[1] ? Number(argv._[1]) : undefined);
+  const cliIp = argv._[0];
+  const cliPort = argv._[1] ? Number(argv._[1]) : undefined;
+  let udpTargetIp = cliIp || cfg.defaults?.udpBindIp || cfg.defaults?.bindIp;
+  let udpTargetPort = pickPort(mode, cfg, cliPort);
+  let tcpTargets = normalizeTcpTargets(cfg, cliIp, cliPort);
 
-  if (!targetIp) {
-    console.error('No target IP provided. Pass <ip> on the command line or set defaults.tcpHost (or defaults.udpBindIp) in config.json.');
+  if (mode === 'udp' && !udpTargetIp) {
+    console.error('No bind IP provided. Pass <ip> on the command line or set defaults.udpBindIp (or defaults.bindIp) in config.json.');
+    process.exit(2);
+  }
+  if (mode === 'tcp' && tcpTargets.length === 0) {
+    console.error('No TCP target IP provided. Pass <ip> on the command line or set defaults.tcpHost / defaults.tcpHosts in config.json.');
     process.exit(2);
   }
 
@@ -90,13 +118,17 @@ async function main() {
 
 
   const state = createState();
-  state.setBase({ mode, ip: targetIp, port: targetPort });
+  const stateIp = mode === 'tcp' ? tcpTargets.map((t) => t.ip).join(',') : udpTargetIp;
+  const statePort = mode === 'tcp'
+    ? (tcpTargets.length === 1 ? tcpTargets[0].port : null)
+    : udpTargetPort;
+  state.setBase({ mode, ip: stateIp, port: statePort });
+  state.setTcpTargetsTotal(mode === 'tcp' ? tcpTargets.length : 0);
 
   let adminHandle = null;
 
   // Refs used for shutdown / admin restart
-  let tcpSocket = null;
-  let tcpReconnectTimer = null;
+  const tcpClients = new Map();
   let udpSocket = null;
   let stopping = false;
 
@@ -105,14 +137,21 @@ async function main() {
   };
 
   const setTarget = ({ ip, port }) => {
-    if (ip) targetIp = ip;
-    if (port) targetPort = Number(port) || targetPort;
-    state.setBase({ mode, ip: targetIp, port: targetPort });
+    if (mode !== 'tcp') return;
+    if (tcpTargets.length === 0) return;
+    const first = tcpTargets[0];
+    if (ip) first.ip = ip;
+    if (port) first.port = Number(port) || first.port;
+    state.setBase({
+      mode,
+      ip: tcpTargets.map((t) => t.ip).join(','),
+      port: tcpTargets.length === 1 ? tcpTargets[0].port : null
+    });
 
-    // For TCP mode, force a reconnect so the new target takes effect immediately.
-    if (mode === 'tcp') {
+    // Force reconnects so the new target takes effect immediately.
+    for (const client of tcpClients.values()) {
       try {
-        if (tcpSocket) tcpSocket.destroy(new Error('admin target change'));
+        if (client.socket) client.socket.destroy(new Error('admin target change'));
       } catch (_) {}
     }
   };
@@ -127,18 +166,19 @@ async function main() {
     try { postQueue.stop(); } catch (_) {}
     try { if (adminHandle) await adminHandle.stop(); } catch (_) {}
 
-    try {
-      if (tcpReconnectTimer) clearTimeout(tcpReconnectTimer);
-      tcpReconnectTimer = null;
-    } catch (_) {}
-
-    try {
-      if (tcpSocket) {
-        try { tcpSocket.removeAllListeners(); } catch (_) {}
-        try { tcpSocket.destroy(); } catch (_) {}
-      }
-      tcpSocket = null;
-    } catch (_) {}
+    for (const client of tcpClients.values()) {
+      try {
+        if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+        client.reconnectTimer = null;
+      } catch (_) {}
+      try {
+        if (client.socket) {
+          try { client.socket.removeAllListeners(); } catch (_) {}
+          try { client.socket.destroy(); } catch (_) {}
+        }
+        client.socket = null;
+      } catch (_) {}
+    }
 
     try {
       if (udpSocket) {
@@ -289,7 +329,7 @@ async function main() {
 
   if (suppressStatus) logger.info('Status suppression enabled (TOR 0x0002)');
 
-  const decoder = new StreamP3Decoder(async (parsed) => {
+  const handleParsedRecord = async (parsed, source) => {
     if (!parsed.ok) {
       state.onParseResult(parsed);
       logger.warnMeta('P3 parse error', parsed);
@@ -302,6 +342,7 @@ async function main() {
       if (argv.debug) {
         logger.debugMeta('Suppressed status record', {
           tor: `0x${parsed.tor.toString(16).padStart(4, '0')}`,
+          source,
           decoderId: parsed.fields?.find(f => f?.tofName === 'decoderId')?.value
         });
       }
@@ -341,6 +382,7 @@ async function main() {
       torName: parsed.torName,
       flags: parsed.flags,
       crcOk: parsed.crc.ok,
+      source,
       decoded,
       fields: parsed.fields.map(f => ({
         tof: f.tof,
@@ -382,12 +424,12 @@ async function main() {
       });
 
       if (!res.ok) {
-        logger.errorMeta('Failed to post record (queued)', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
+        logger.errorMeta('Failed to post record (queued)', { torName: payload.torName, status: res.status, source, ...(tranCode ? { tranCode } : {}) });
         postQueue.enqueue({ method, url, headers, data: payload, reason: `HTTP ${res.status}` });
         state.onPostResult({ ok: false, queued: true });
         state.setPostQueueSize(postQueue.size());
       } else {
-        logger.infoMeta('Posted record', { torName: payload.torName, status: res.status, ...(tranCode ? { tranCode } : {}) });
+        logger.infoMeta('Posted record', { torName: payload.torName, status: res.status, source, ...(tranCode ? { tranCode } : {}) });
         state.onPostResult({ ok: true, queued: false });
         // On success, try to replay any queued errors immediately.
         void postQueue.drain('onSuccess');
@@ -395,15 +437,15 @@ async function main() {
     } catch (e) {
       // Network / TLS / timeout errors after retries. Do NOT crash the server.
       const msg = e?.message || 'post exception';
-      logger.errorMeta('Post exception (queued)', { torName: payload.torName, message: msg, ...(tranCode ? { tranCode } : {}) });
+      logger.errorMeta('Post exception (queued)', { torName: payload.torName, message: msg, source, ...(tranCode ? { tranCode } : {}) });
       postQueue.enqueue({ method, url, headers, data: payload, reason: msg });
       state.onPostResult({ ok: false, queued: true });
       state.setPostQueueSize(postQueue.size());
     }
-  });
+  };
 
   if (mode === 'tcp') {
-    logger.infoMeta('Starting TCP client', { ip: targetIp, port: targetPort, config: cfgPath });
+    logger.infoMeta('Starting TCP clients', { targets: tcpTargets, config: cfgPath });
 
     const rcfg = {
       baseDelayMs: cfg.decoder?.reconnect?.baseDelayMs ?? 1000,
@@ -413,16 +455,7 @@ async function main() {
       connectTimeoutMs: cfg.decoder?.reconnect?.connectTimeoutMs ?? (cfg.defaults?.connectTimeoutMs ?? 8000),
     };
 
-    let attempt = 0;
-
-    const cleanupSocket = () => {
-      if (!tcpSocket) return;
-      try { tcpSocket.removeAllListeners(); } catch (_) {}
-      try { tcpSocket.destroy(); } catch (_) {}
-      tcpSocket = null;
-    };
-
-    const computeDelayMs = () => {
+    const computeDelayMs = (attempt) => {
       // attempt starts at 1 for first retry
       const exp = Math.max(0, attempt - 1);
       let delay = rcfg.baseDelayMs * Math.pow(rcfg.backoffFactor, exp);
@@ -433,73 +466,95 @@ async function main() {
       return Math.max(0, Math.round(delay));
     };
 
-    const scheduleReconnect = (reason) => {
+    const scheduleReconnect = (client, reason) => {
       if (stopping) return;
-      attempt += 1;
-      const delayMs = computeDelayMs();
-      state.onTcpReconnectScheduled(attempt);
-      logger.warnMeta('TCP reconnect scheduled', { ip: targetIp, port: targetPort, attempt, delayMs, reason });
-      if (tcpReconnectTimer) clearTimeout(tcpReconnectTimer);
-      tcpReconnectTimer = setTimeout(connectOnce, delayMs);
+      client.attempt += 1;
+      const delayMs = computeDelayMs(client.attempt);
+      state.onTcpReconnectScheduled(client.attempt);
+      logger.warnMeta('TCP reconnect scheduled', { ip: client.ip, port: client.port, attempt: client.attempt, delayMs, reason });
+      if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+      client.reconnectTimer = setTimeout(() => connectOnce(client), delayMs);
     };
 
-    const connectOnce = () => {
+    const connectOnce = (client) => {
       if (stopping) return;
-      if (tcpReconnectTimer) { clearTimeout(tcpReconnectTimer); tcpReconnectTimer = null; }
+      if (client.reconnectTimer) { clearTimeout(client.reconnectTimer); client.reconnectTimer = null; }
+      if (client.socket) {
+        try { client.socket.removeAllListeners(); } catch (_) {}
+        try { client.socket.destroy(); } catch (_) {}
+        client.socket = null;
+      }
 
-      cleanupSocket();
-
-      logger.infoMeta('TCP connecting', { ip: targetIp, port: targetPort, attempt });
-      tcpSocket = net.createConnection({ host: targetIp, port: targetPort });
-
-      tcpSocket.setNoDelay(true);
+      logger.infoMeta('TCP connecting', { ip: client.ip, port: client.port, attempt: client.attempt });
+      client.socket = net.createConnection({ host: client.ip, port: client.port });
+      client.socket.setNoDelay(true);
 
       // connect timeout
       const t = setTimeout(() => {
-        if (!tcpSocket) return;
-        logger.warnMeta('TCP connect timeout', { ip: targetIp, port: targetPort, timeoutMs: rcfg.connectTimeoutMs });
-        try { tcpSocket.destroy(new Error('connect timeout')); } catch (_) {}
+        if (!client.socket) return;
+        logger.warnMeta('TCP connect timeout', { ip: client.ip, port: client.port, timeoutMs: rcfg.connectTimeoutMs });
+        try { client.socket.destroy(new Error('connect timeout')); } catch (_) {}
       }, rcfg.connectTimeoutMs);
 
-      tcpSocket.on('connect', () => {
+      client.socket.on('connect', () => {
         clearTimeout(t);
-        attempt = 0;
+        client.attempt = 0;
         state.onTcpConnect();
-        logger.info('TCP connected');
+        logger.infoMeta('TCP connected', { ip: client.ip, port: client.port });
       });
 
-      tcpSocket.on('data', (chunk) => decoder.push(chunk));
+      client.socket.on('data', (chunk) => client.decoder.push(chunk));
 
-      tcpSocket.on('error', (err) => {
+      client.socket.on('error', (err) => {
         // keep running; close will trigger reconnect if needed
-        logger.errorMeta('TCP error', { message: err.message, code: err.code });
+        logger.errorMeta('TCP error', { ip: client.ip, port: client.port, message: err.message, code: err.code });
       });
 
-      tcpSocket.on('close', (hadError) => {
+      client.socket.on('close', (hadError) => {
         clearTimeout(t);
         state.onTcpDisconnect();
-        logger.warnMeta('TCP connection closed', { hadError });
-        scheduleReconnect('close');
+        logger.warnMeta('TCP connection closed', { ip: client.ip, port: client.port, hadError });
+        scheduleReconnect(client, 'close');
       });
     };
 
+    tcpTargets.forEach((target, idx) => {
+      const source = `${target.ip}:${target.port}`;
+      const client = {
+        id: idx,
+        ip: target.ip,
+        port: target.port,
+        attempt: 0,
+        socket: null,
+        reconnectTimer: null,
+        decoder: new StreamP3Decoder((parsed) => handleParsedRecord(parsed, source))
+      };
+      tcpClients.set(source, client);
+      connectOnce(client);
+    });
+
     process.on('SIGINT', () => {
       stopping = true;
-      if (tcpReconnectTimer) clearTimeout(tcpReconnectTimer);
-      cleanupSocket();
+      for (const client of tcpClients.values()) {
+        if (client.reconnectTimer) clearTimeout(client.reconnectTimer);
+        if (client.socket) {
+          try { client.socket.removeAllListeners(); } catch (_) {}
+          try { client.socket.destroy(); } catch (_) {}
+          client.socket = null;
+        }
+      }
       logger.info('Shutting down (SIGINT)');
       process.exit(0);
     });
 
-    connectOnce();
-
   } else {
-    logger.infoMeta('Starting UDP listener', { ip: targetIp, port: targetPort, config: cfgPath });
+    logger.infoMeta('Starting UDP listener', { ip: udpTargetIp, port: udpTargetPort, config: cfgPath });
+    const decoder = new StreamP3Decoder((parsed) => handleParsedRecord(parsed, `${udpTargetIp}:${udpTargetPort}`));
     udpSocket = dgram.createSocket('udp4');
     udpSocket.on('message', (msg) => decoder.push(msg));
     udpSocket.on('listening', () => logger.infoMeta('UDP listening', udpSocket.address()));
     udpSocket.on('error', (err) => logger.errorMeta('UDP error', { message: err.message }));
-    udpSocket.bind(targetPort, targetIp);
+    udpSocket.bind(udpTargetPort, udpTargetIp);
   }
 }
 

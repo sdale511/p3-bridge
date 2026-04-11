@@ -4,7 +4,10 @@
     "udpListenPort": 5303,
     "udpSendPort": 5403,
     "mode": "tcp",
-    "tcpHost": "127.0.0.1"
+    "tcpHost": "127.0.0.1",
+    "tcpHosts": [
+      "127.0.0.1"
+    ]
   },
   "post": {
     "enabled": true,
