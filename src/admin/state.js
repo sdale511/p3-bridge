@@ -7,6 +7,7 @@ function createState() {
     ip: null,
     port: null,
     targets: [],
+    recentEvents: [],
 
     tcpConnected: false,
     tcpConnectedCount: 0,
@@ -40,6 +41,12 @@ function createState() {
   function incMap(map, key) {
     const k = (key || 'unknown').toString();
     map[k] = (map[k] || 0) + 1;
+  }
+
+  function pushRecentEvent(event) {
+    if (!event || typeof event !== 'object') return;
+    s.recentEvents.unshift(event);
+    if (s.recentEvents.length > 50) s.recentEvents.length = 50;
   }
 
   return {
@@ -101,6 +108,16 @@ function createState() {
       s.msgOk += 1;
       if (parsed?.crc && parsed.crc.ok === false) s.msgCrcBad += 1;
       incMap(s.msgByTorName, parsed.torName || 'unknown');
+    },
+    addRecentEvent(event) {
+      pushRecentEvent(event);
+    },
+    setRecentEvents(events) {
+      s.recentEvents = Array.isArray(events)
+        ? events
+          .filter((event) => event && typeof event === 'object')
+          .slice(0, 50)
+        : [];
     },
     onPostResult({ ok, queued } = {}) {
       if (ok) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const fs = require('fs');
 const net = require('net');
 const dgram = require('dgram');
 const path = require('path');
@@ -52,6 +53,104 @@ function syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort) {
   state.setTcpTargetsTotal(mode === 'tcp' ? tcpTargets.length : 0);
 }
 
+function formatEventTime(value) {
+  if (value == null) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  const ms = num > 1e12 ? Math.round(num / 1000) : num;
+  const dt = new Date(ms);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function summarizeParsedEvent(parsed, decoded, source) {
+  const decoderId = decoded.decoderId || null;
+  const prefix = decoderId ? `Box ${decoderId}` : source;
+  const torName = (parsed.torName || 'record').toString();
+
+  if (torName === 'passing') {
+    const transponder = decoded.tranCode || decoded.transponder || 'unknown';
+    const passingNumber = decoded.passingNumber != null ? `pass #${decoded.passingNumber}` : null;
+    const strength = decoded.strength != null ? `strength ${decoded.strength}` : null;
+    const hits = decoded.hits != null ? `${decoded.hits} hits` : null;
+    const when = formatEventTime(decoded.utcTime || decoded.rtcTime);
+    const parts = [
+      `Transponder ${transponder}`,
+      passingNumber,
+      when ? `at ${when}` : null,
+      strength,
+      hits
+    ].filter(Boolean);
+    return {
+      at: new Date().toISOString(),
+      type: 'passing',
+      source,
+      summary: `${prefix}: ${parts.join(' | ')}`
+    };
+  }
+
+  if (torName === 'loopTrigger') {
+    const code = decoded.code || 'loop trigger';
+    const when = formatEventTime(decoded.utcTime || decoded.rtcTime);
+    return {
+      at: new Date().toISOString(),
+      type: 'loopTrigger',
+      source,
+      summary: `${prefix}: Loop ${code}${when ? ` at ${when}` : ''}`
+    };
+  }
+
+  return {
+    at: new Date().toISOString(),
+    type: torName,
+    source,
+    summary: `${prefix}: ${torName}`
+  };
+}
+
+function loadRecentEvents(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((event) => event && typeof event === 'object').slice(0, 50)
+      : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function createRecentEventPersister(filePath) {
+  let pending = false;
+  let queuedEvents = null;
+
+  const flush = async () => {
+    pending = true;
+    while (queuedEvents) {
+      const events = queuedEvents;
+      queuedEvents = null;
+      try {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        const tmpPath = `${filePath}.tmp`;
+        await fs.promises.writeFile(tmpPath, JSON.stringify(events, null, 2) + '\n', 'utf8');
+        await fs.promises.rename(tmpPath, filePath);
+      } catch (_) {}
+    }
+    pending = false;
+  };
+
+  return (events) => {
+    queuedEvents = Array.isArray(events) ? events.slice(0, 50) : [];
+    if (!pending) void flush();
+  };
+}
+
 async function main() {
   const argv = yargs(hideBin(process.argv))
     .scriptName('p3-bridge')
@@ -92,6 +191,7 @@ async function main() {
   }
 
   const logDir = cfg.logging?.dir || path.join(process.cwd(), 'logs');
+  const recentEventsPath = path.join(logDir, 'transponder-events.json');
 
   const logger = makeLogger({
     name: 'main',
@@ -128,6 +228,8 @@ async function main() {
 
 
   const state = createState();
+  state.setRecentEvents(loadRecentEvents(recentEventsPath));
+  const persistRecentEvents = createRecentEventPersister(recentEventsPath);
   syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort);
 
   let adminHandle = null;
@@ -405,6 +507,9 @@ async function main() {
       })),
       raw: argv.debug ? parsed.raw : undefined
     };
+
+    state.addRecentEvent(summarizeParsedEvent(parsed, decoded, source));
+    persistRecentEvents(state.snapshot().recentEvents);
 
     jsonLogger.info(JSON.stringify(payload));
 

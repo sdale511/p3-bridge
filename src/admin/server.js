@@ -392,6 +392,7 @@ app.get('/admin', (req, res) => {
     <div class="brand">p3-bridge admin <span class="pill">v${semanticVersion}</span> <span class="pill">git ${gitShortHash || 'n/a'}</span></div>
     <nav class="topbar-nav">
       <a class="navlink active" href="/admin">Dashboard</a>
+      <a class="navlink " href="/admin/settings">Settings</a>
       <a class="navlink " href="/admin/logs">Logs</a>
     </nav>
   </header>
@@ -429,34 +430,14 @@ app.get('/admin', (req, res) => {
       <small>Updates timer heartbeat frequency. Use the main Restart button if you also changed other timer settings (baseUrl/path).</small>
       <div id="timerResult"></div>
     </div>
-
-    <div class="card" style="flex:1;min-width:320px">
-      <h3>Update settings (JSON patch)</h3>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px 0">
-        <button class="secBtn" data-sec="__full">Load full config</button>
-        <button class="secBtn" data-sec="post">Load post</button>
-        <button class="secBtn" data-sec="timer">Load timer</button>
-        <button class="secBtn" data-sec="logging">Load logging</button>
-        <button class="secBtn" data-sec="admin">Load admin</button>
-        <button class="secBtn" data-sec="defaults">Load defaults</button>
-        <button class="secBtn" data-sec="decoder.reconnect">Load decoder.reconnect</button>
-      </div>
-      <div class="small muted">Current config (read-only)</div>
-      <pre id="configCurrent" class="codebox"></pre>
-      <div class="small muted" style="margin-top:8px">Edit JSON (only allowlisted keys are applied)</div>
-      <textarea id="patch" rows="10" spellcheck="false"></textarea>
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button id="applyBtn">Set</button>
-        <button id="applyPersistBtn">Set and Save</button>
-      </div>
-      <small>Only a safe subset of fields can be changed (post.*, timer.*, logging.*, admin.*, defaults.*, decoder.reconnect.*).</small>
-      <div id="applyResult"></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <div class="card" style="width:100%;min-width:320px">
+      <h3>Transponder Events</h3>
+      <div id="eventFeed" class="codebox" style="max-height:360px"></div>
+      <small>Most recent events from any connected MYLAPS box.</small>
     </div>
   </div>
-
-  <h3>Raw snapshot</h3>
-  <pre id="raw"></pre>
-
 
   <script>
 async function api(path, opts){
@@ -468,11 +449,11 @@ async function api(path, opts){
 function fmt(n){ return (n==null)?'—':String(n); }
 function escapeHtml(value){
   return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .split('&').join('&amp;')
+    .split('<').join('&lt;')
+    .split('>').join('&gt;')
+    .split('"').join('&quot;')
+    .split("'").join('&#39;');
 }
 function targetRows(s){
   const targets = Array.isArray(s.targets) && s.targets.length
@@ -495,7 +476,8 @@ function targetListValue(s){
 }
 function parseTargets(text){
   return String(text || '')
-    .split(/\\r?\\n/)
+    .replaceAll('\\r', '')
+    .split('\\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
@@ -507,6 +489,16 @@ function parseTargets(text){
       if (!port || port < 1 || port > 65535) throw new Error('Target port must be between 1 and 65535');
       return { ip, port };
     });
+}
+function eventFeedHtml(events){
+  if(!Array.isArray(events) || !events.length) return '<span class="muted">No transponder events received yet.</span>';
+  return events.map((event) => {
+    const at = event && event.at ? new Date(event.at) : null;
+    const ts = at && !Number.isNaN(at.getTime())
+      ? at.toLocaleTimeString('en-US', { hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit' })
+      : '—';
+    return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + escapeHtml(event.summary || 'event') + '</div>';
+  }).join('');
 }
 
 async function refresh(){
@@ -530,10 +522,11 @@ async function refresh(){
       lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
     }
     document.getElementById('status').innerHTML = lines.join('<br/>');
+    document.getElementById('eventFeed').innerHTML = eventFeedHtml(s.recentEvents);
     document.getElementById('updated').textContent = 'Updated ' + j.at;
-    document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
   }catch(e){
     document.getElementById('status').textContent = 'Error: ' + e.message;
+    document.getElementById('eventFeed').textContent = 'Error: ' + e.message;
   }
 }
 
@@ -543,69 +536,6 @@ if(__el_restartBtn) __el_restartBtn.onclick = async () => {
   try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
 };
 
-
-async function apply(persist){
-  let patch;
-  try{ patch = JSON.parse(document.getElementById('patch').value); }
-  catch(e){ alert('Patch JSON is invalid: ' + e.message); return; }
-  const url = '/admin/api/settings?persist=' + (persist ? 'true' : 'false');
-  try{
-    const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
-    document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
-    if(persist) window.location.reload();
-  }catch(e){
-    document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
-  }
-}
-
-const __el_applyBtn = document.getElementById('applyBtn');
-if(__el_applyBtn) __el_applyBtn.onclick = () => apply(false);
-const __el_applyPersistBtn = document.getElementById('applyPersistBtn');
-if(__el_applyPersistBtn) __el_applyPersistBtn.onclick = () => apply(true);
-
-// Load current config into the JSON patch box (template for allowed changes)
-async function loadSection(sec){
-  const out = document.getElementById('applyResult');
-  out.textContent = '';
-  try{
-    const j = await api('/admin/api/settings');
-    const cfg = (j && j.config) ? j.config : {};
-    // Always show the full current config tree (read-only)
-    const cur = document.getElementById('configCurrent');
-    if(cur) cur.textContent = JSON.stringify(cfg, null, 2);
-
-    let payload = {};
-    if(sec === '__full'){
-      payload = cfg;
-    } else if(sec === 'decoder.reconnect'){
-      payload = { decoder: { reconnect: (cfg.decoder && cfg.decoder.reconnect) ? cfg.decoder.reconnect : {} } };
-    } else {
-      payload[sec] = (cfg && cfg[sec]) ? cfg[sec] : {};
-    }
-
-    const patch = document.getElementById('patch');
-    if(patch){
-      patch.value = JSON.stringify(payload, null, 2);
-      patch.dataset.dirty = '0';
-    }
-    out.innerHTML = '<small>Loaded current <b>'+sec+'</b> config into the editor.</small>';
-  }catch(e){
-    out.innerHTML = '<pre>'+e.message+'</pre>';
-  }
-}
-
-document.querySelectorAll('.secBtn').forEach(btn=>{
-  btn.addEventListener('click', ()=> loadSection(btn.getAttribute('data-sec')));
-});
-
-// mark editor dirty on manual edits
-const patchEl = document.getElementById('patch');
-if(patchEl){
-  patchEl.addEventListener('input', ()=> { patchEl.dataset.dirty = '1'; });
-}
-
-// Load full config tree into view/editor on page load
-loadSection('__full');
 
 async function setTarget(persist){
   const out = document.getElementById('targetResult');
@@ -728,11 +658,164 @@ if (logNameEl) logNameEl.onchange = () => { updateHideToggle(); tailOnce(); };
 if (hideTimerEl) hideTimerEl.onchange = () => tailOnce();
 updateHideToggle();
 
-if (document.getElementById('status')) {
+  if (document.getElementById('status')) {
   refresh();
   setInterval(refresh, 2000);
 }
 </script>
+</body>
+</html>`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  });
+
+  app.get('/admin/settings', (req, res) => {
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>p3-bridge admin settings</title>
+  <style>
+    :root{--bg:#f3f6fb;--panel:#ffffff;--bd:#d7dfec;--muted:#5f6b7a;--ink:#111827;--accent:#2563eb;--accent2:#4f46e5}
+    body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;line-height:1.35;background:linear-gradient(180deg,#eef3ff 0,#f8fbff 180px,var(--bg) 181px);color:var(--ink)}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(37,99,235,0.18);position:sticky;top:0;background:rgba(255,255,255,0.88);backdrop-filter:blur(8px);z-index:10}
+    .brand{font-weight:800;display:flex;gap:8px;align-items:center}
+    .brand .pill{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(37,99,235,0.12);color:var(--accent);border:1px solid rgba(37,99,235,0.28)}
+    .topbar-nav{display:flex;gap:8px;flex-wrap:wrap}
+    .navlink{padding:7px 12px;border-radius:10px;text-decoration:none;border:1px solid rgba(37,99,235,0.20);color:#123; background:#fff}
+    .navlink.active{border-color:rgba(37,99,235,0.4);background:rgba(37,99,235,0.08);color:var(--accent)}
+    .page{padding:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .card{border:1px solid var(--bd);border-radius:14px;padding:12px;min-width:220px;background:var(--panel);box-shadow:0 8px 24px rgba(31,41,55,0.06)}
+    pre{background:#f7faff;padding:10px;border-radius:10px;overflow:auto;border:1px solid #e3ebfb}
+    button{padding:8px 11px;border-radius:10px;border:1px solid #b8c7ea;background:#fff;cursor:pointer;font-weight:600}
+    button:hover{background:#eef4ff}
+    textarea{width:100%;box-sizing:border-box;padding:8px 9px;border-radius:10px;border:1px solid #c8d5ef;background:#fff}
+    small{color:var(--muted)}
+    h2{margin:0 0 10px}
+    h3{margin:0 0 8px;font-size:14px}
+    .codebox{max-height:240px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:12px;white-space:pre;}
+    .small{font-size:12px}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">p3-bridge admin <span class="pill">v${semanticVersion}</span> <span class="pill">git ${gitShortHash || 'n/a'}</span></div>
+    <nav class="topbar-nav">
+      <a class="navlink " href="/admin">Dashboard</a>
+      <a class="navlink active" href="/admin/settings">Settings</a>
+      <a class="navlink " href="/admin/logs">Logs</a>
+    </nav>
+  </header>
+  <main class="page">
+    <div class="row">
+      <div class="card" style="flex:1;min-width:320px">
+        <h3>Update settings (JSON patch)</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px 0">
+          <button class="secBtn" data-sec="__full">Load full config</button>
+          <button class="secBtn" data-sec="post">Load post</button>
+          <button class="secBtn" data-sec="timer">Load timer</button>
+          <button class="secBtn" data-sec="logging">Load logging</button>
+          <button class="secBtn" data-sec="admin">Load admin</button>
+          <button class="secBtn" data-sec="defaults">Load defaults</button>
+          <button class="secBtn" data-sec="decoder.reconnect">Load decoder.reconnect</button>
+        </div>
+        <div class="small">Current config (read-only)</div>
+        <pre id="configCurrent" class="codebox"></pre>
+        <div class="small" style="margin-top:8px">Edit JSON (only allowlisted keys are applied)</div>
+        <textarea id="patch" rows="14" spellcheck="false"></textarea>
+        <div style="display:flex;gap:10px;margin-top:8px">
+          <button id="applyBtn">Set</button>
+          <button id="applyPersistBtn">Set and Save</button>
+        </div>
+        <small>Only a safe subset of fields can be changed (post.*, timer.*, logging.*, admin.*, defaults.*, decoder.reconnect.*).</small>
+        <div id="applyResult"></div>
+      </div>
+    </div>
+    <h3>Raw snapshot</h3>
+    <pre id="raw"></pre>
+  </main>
+
+  <script>
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
+  if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  return j;
+}
+function fmt(n){ return (n==null)?'—':String(n); }
+
+async function refresh(){
+  try{
+    const j = await api('/admin/api/status');
+    document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
+  }catch(e){
+    document.getElementById('raw').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function apply(persist){
+  let patch;
+  try{ patch = JSON.parse(document.getElementById('patch').value); }
+  catch(e){ alert('Patch JSON is invalid: ' + e.message); return; }
+  const url = '/admin/api/settings?persist=' + (persist ? 'true' : 'false');
+  try{
+    const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
+    document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
+    if(persist) window.location.reload();
+  }catch(e){
+    document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
+  }
+}
+
+const __el_applyBtn = document.getElementById('applyBtn');
+if(__el_applyBtn) __el_applyBtn.onclick = () => apply(false);
+const __el_applyPersistBtn = document.getElementById('applyPersistBtn');
+if(__el_applyPersistBtn) __el_applyPersistBtn.onclick = () => apply(true);
+
+async function loadSection(sec){
+  const out = document.getElementById('applyResult');
+  out.textContent = '';
+  try{
+    const j = await api('/admin/api/settings');
+    const cfg = (j && j.config) ? j.config : {};
+    const cur = document.getElementById('configCurrent');
+    if(cur) cur.textContent = JSON.stringify(cfg, null, 2);
+
+    let payload = {};
+    if(sec === '__full'){
+      payload = cfg;
+    } else if(sec === 'decoder.reconnect'){
+      payload = { decoder: { reconnect: (cfg.decoder && cfg.decoder.reconnect) ? cfg.decoder.reconnect : {} } };
+    } else {
+      payload[sec] = (cfg && cfg[sec]) ? cfg[sec] : {};
+    }
+
+    const patch = document.getElementById('patch');
+    if(patch){
+      patch.value = JSON.stringify(payload, null, 2);
+      patch.dataset.dirty = '0';
+    }
+    out.innerHTML = '<small>Loaded current <b>'+sec+'</b> config into the editor.</small>';
+  }catch(e){
+    out.innerHTML = '<pre>'+e.message+'</pre>';
+  }
+}
+
+document.querySelectorAll('.secBtn').forEach(btn=>{
+  btn.addEventListener('click', ()=> loadSection(btn.getAttribute('data-sec')));
+});
+
+const patchEl = document.getElementById('patch');
+if(patchEl){
+  patchEl.addEventListener('input', ()=> { patchEl.dataset.dirty = '1'; });
+}
+
+loadSection('__full');
+refresh();
+setInterval(refresh, 2000);
+  </script>
 </body>
 </html>`;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -777,6 +860,7 @@ if (document.getElementById('status')) {
     <div class="brand">p3-bridge admin <span class="pill">v${semanticVersion}</span> <span class="pill">git ${gitShortHash || 'n/a'}</span></div>
     <nav class="topbar-nav">
       <a class="navlink " href="/admin">Dashboard</a>
+      <a class="navlink " href="/admin/settings">Settings</a>
       <a class="navlink active" href="/admin/logs">Logs</a>
     </nav>
   </header>
@@ -825,166 +909,6 @@ async function api(path, opts){
   if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
   return j;
 }
-function fmt(n){ return (n==null)?'—':String(n); }
-function escapeHtml(value){
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-function targetRows(s){
-  const targets = Array.isArray(s.targets) && s.targets.length
-    ? s.targets
-    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
-  const label = targets.length > 1 ? 'Targets' : 'Target';
-  const body = targets.length
-    ? targets.map((target) => {
-        const status = target.status || (s.tcpConnected ? 'connected' : 'disconnected');
-        return escapeHtml(fmt(target.ip)) + ':' + escapeHtml(fmt(target.port)) + ' <span class="muted">(' + escapeHtml(status) + ')</span>';
-      }).join('<br/>')
-    : '—';
-  return '<b>' + label + ':</b><br/>' + body;
-}
-function targetListValue(s){
-  const targets = Array.isArray(s.targets) && s.targets.length
-    ? s.targets
-    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
-  return targets.map((target) => fmt(target.ip) + ':' + fmt(target.port)).join('\\n');
-}
-function parseTargets(text){
-  return String(text || '')
-    .split(/\\r?\\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const idx = line.lastIndexOf(':');
-      if (idx <= 0 || idx === line.length - 1) throw new Error('Each target must be in ip:port format');
-      const ip = line.slice(0, idx).trim();
-      const port = Number(line.slice(idx + 1).trim());
-      if (!ip) throw new Error('Target IP is required');
-      if (!port || port < 1 || port > 65535) throw new Error('Target port must be between 1 and 65535');
-      return { ip, port };
-    });
-}
-
-async function refresh(){
-  try{
-    const j = await api('/admin/api/status');
-    const s = j.state;
-    // populate target inputs if empty
-    const tlist = document.getElementById('targetList');
-    if(tlist && !tlist.value) tlist.value = targetListValue(s);
-    const tint = document.getElementById('timerIntervalSec');
-    if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
-
-    const lines = [];
-    lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
-    lines.push('<b>Mode:</b> ' + fmt(s.mode));
-    lines.push(targetRows(s));
-    lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
-    lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
-    if (typeof s.timerOk !== 'undefined') {
-      lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
-    }
-    document.getElementById('status').innerHTML = lines.join('<br/>');
-    document.getElementById('updated').textContent = 'Updated ' + j.at;
-    document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
-  }catch(e){
-    document.getElementById('status').textContent = 'Error: ' + e.message;
-  }
-}
-
-const __el_restartBtn = document.getElementById('restartBtn');
-if(__el_restartBtn) __el_restartBtn.onclick = async () => {
-  if(!confirm('Restart p3-bridge now?')) return;
-  try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
-};
-
-
-async function apply(persist){
-  let patch;
-  try{ patch = JSON.parse(document.getElementById('patch').value); }
-  catch(e){ alert('Patch JSON is invalid: ' + e.message); return; }
-  const url = '/admin/api/settings?persist=' + (persist ? 'true' : 'false');
-  try{
-    const j = await api(url, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
-    document.getElementById('applyResult').innerHTML = '<pre>'+JSON.stringify(j,null,2)+'</pre>';
-    if(persist) window.location.reload();
-  }catch(e){
-    document.getElementById('applyResult').innerHTML = '<pre>'+e.message+'</pre>';
-  }
-}
-
-const __el_applyBtn = document.getElementById('applyBtn');
-if(__el_applyBtn) __el_applyBtn.onclick = () => apply(false);
-const __el_applyPersistBtn = document.getElementById('applyPersistBtn');
-if(__el_applyPersistBtn) __el_applyPersistBtn.onclick = () => apply(true);
-
-// Load current config into the JSON patch box (template for allowed changes)
-async function loadSection(sec){
-  const out = document.getElementById('applyResult');
-  out.textContent = '';
-  try{
-    const j = await api('/admin/api/settings');
-    const cfg = (j && j.config) ? j.config : {};
-    // Always show the full current config tree (read-only)
-    const cur = document.getElementById('configCurrent');
-    if(cur) cur.textContent = JSON.stringify(cfg, null, 2);
-
-    let payload = {};
-    if(sec === '__full'){
-      payload = cfg;
-    } else if(sec === 'decoder.reconnect'){
-      payload = { decoder: { reconnect: (cfg.decoder && cfg.decoder.reconnect) ? cfg.decoder.reconnect : {} } };
-    } else {
-      payload[sec] = (cfg && cfg[sec]) ? cfg[sec] : {};
-    }
-
-    const patch = document.getElementById('patch');
-    if(patch){
-      patch.value = JSON.stringify(payload, null, 2);
-      patch.dataset.dirty = '0';
-    }
-    out.innerHTML = '<small>Loaded current <b>'+sec+'</b> config into the editor.</small>';
-  }catch(e){
-    out.innerHTML = '<pre>'+e.message+'</pre>';
-  }
-}
-
-document.querySelectorAll('.secBtn').forEach(btn=>{
-  btn.addEventListener('click', ()=> loadSection(btn.getAttribute('data-sec')));
-});
-
-// mark editor dirty on manual edits
-const patchEl = document.getElementById('patch');
-if(patchEl){
-  patchEl.addEventListener('input', ()=> { patchEl.dataset.dirty = '1'; });
-}
-
-// Load full config tree into view/editor on page load
-loadSection('__full');
-
-async function setTarget(persist){
-  const out = document.getElementById('targetResult');
-  out.textContent = '';
-  try{
-    const targets = parseTargets(document.getElementById('targetList').value);
-    if(!targets.length) throw new Error('Enter at least one target');
-    const qs = [];
-    if(persist) qs.push('persist=true');
-
-    const url = '/admin/api/target' + (qs.length ? ('?' + qs.join('&')) : '');
-    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ targets, persist })});
-    const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
-    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-    out.innerHTML = '<small>Updated ' + targets.length + ' target' + (targets.length === 1 ? '' : 's') + (persist ? ' (saved)' : '') + '</small>';
-    if(persist) window.location.reload();
-  }catch(e){
-    out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
-  }
-}
 
 async function tailOnce(){
   const name = document.getElementById('logName').value;
@@ -1027,35 +951,6 @@ function setAuto(on){
   }
 }
 
-
-const __el_setTargetBtn = document.getElementById('setTargetBtn');
-if(__el_setTargetBtn) __el_setTargetBtn.onclick = () => setTarget(false);
-const __el_setTargetPersistBtn = document.getElementById('setTargetPersistBtn');
-if(__el_setTargetPersistBtn) __el_setTargetPersistBtn.onclick = () => setTarget(true);
-
-async function setTimerInterval(persist){
-  const val = Number(document.getElementById('timerIntervalSec').value);
-  const out = document.getElementById('timerResult');
-  out.textContent = '';
-  try{
-    if(!val || val < 5 || val > 3600) throw new Error('interval must be between 5 and 3600 seconds');
-    const url = '/admin/api/timer/interval' + (persist ? '?persist=true' : '');
-    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ intervalSec: val, persist })});
-    const j = await r.json().catch(()=>({ok:false,error:'bad json'}));
-    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
-    out.innerHTML = '<small>Timer interval set to ' + val + 's' + (persist ? ' (saved)' : '') + '</small>';
-    if(persist) window.location.reload();
-  }catch(e){
-    out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>';
-  }
-}
-
-const __el_setTimerBtn = document.getElementById('setTimerBtn');
-if(__el_setTimerBtn) __el_setTimerBtn.onclick = () => setTimerInterval(false);
-const __el_setTimerPersistBtn = document.getElementById('setTimerPersistBtn');
-if(__el_setTimerPersistBtn) __el_setTimerPersistBtn.onclick = () => setTimerInterval(true);
-
-
 const __el_clearLogBtn = document.getElementById('clearLogBtn');
 if(__el_clearLogBtn) __el_clearLogBtn.onclick = async () => {
   const name = document.getElementById('logName').value;
@@ -1086,11 +981,6 @@ function updateHideToggle(){
 if (logNameEl) logNameEl.onchange = () => { updateHideToggle(); tailOnce(); };
 if (hideTimerEl) hideTimerEl.onchange = () => tailOnce();
 updateHideToggle();
-
-if (document.getElementById('status')) {
-  refresh();
-  setInterval(refresh, 2000);
-}
 </script>
 </body>
 </html>`;
