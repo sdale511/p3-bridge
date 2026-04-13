@@ -136,7 +136,7 @@ async function atomicWriteJson(filePath, obj) {
   await fs.promises.rename(tmp, filePath);
 }
 
-function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, setTimerInterval, logDir, logPrefixes }) {
+function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, clearRecentEvents, setTimerInterval, logDir, logPrefixes }) {
   let pkgVersion = '';
   try {
     const pj = JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
@@ -248,6 +248,16 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
   app.post('/admin/api/restart', (req, res) => {
     res.json({ ok: true, at: nowIso(), restarting: true });
     setTimeout(() => requestRestart('admin requested restart'), 250).unref();
+  });
+
+  app.post('/admin/api/events/clear', (req, res) => {
+    try {
+      if (typeof clearRecentEvents === 'function') clearRecentEvents();
+      res.json({ ok: true, at: nowIso(), cleared: true });
+    } catch (e) {
+      logger.errorMeta('Admin event clear failed', { message: e?.message });
+      res.status(500).json({ ok: false, error: e?.message || 'event clear failed' });
+    }
   });
 
   
@@ -433,7 +443,10 @@ app.get('/admin', (req, res) => {
   </div>
   <div class="row" style="margin-top:10px">
     <div class="card" style="width:100%;min-width:320px">
-      <h3>Transponder Events</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">Transponder Events</h3>
+        <button id="clearEventsBtn">Clear</button>
+      </div>
       <div id="eventFeed" class="codebox" style="max-height:360px"></div>
       <small>Most recent events from any connected MYLAPS box.</small>
     </div>
@@ -497,6 +510,12 @@ function eventFeedHtml(events){
     const ts = at && !Number.isNaN(at.getTime())
       ? at.toLocaleTimeString('en-US', { hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit' })
       : '—';
+    if(event && event.type === 'passing' && event.transponder){
+      const color = event.duplicate ? '#b91c1c' : 'inherit';
+      const details = Array.isArray(event.details) ? event.details.map((part) => escapeHtml(part)).join(' | ') : '';
+      const body = escapeHtml(event.prefix || 'Event') + ': Transponder <span style="color:' + color + ';font-weight:600">' + escapeHtml(event.transponder) + '</span>' + (details ? ' | ' + details : '');
+      return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + body + '</div>';
+    }
     return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + escapeHtml(event.summary || 'event') + '</div>';
   }).join('');
 }
@@ -534,6 +553,17 @@ const __el_restartBtn = document.getElementById('restartBtn');
 if(__el_restartBtn) __el_restartBtn.onclick = async () => {
   if(!confirm('Restart p3-bridge now?')) return;
   try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
+};
+
+const __el_clearEventsBtn = document.getElementById('clearEventsBtn');
+if(__el_clearEventsBtn) __el_clearEventsBtn.onclick = async () => {
+  if(!confirm('Clear recent transponder events?')) return;
+  try{
+    await api('/admin/api/events/clear', {method:'POST'});
+    await refresh();
+  }catch(e){
+    alert(e.message);
+  }
 };
 
 

@@ -68,29 +68,34 @@ function formatEventTime(value) {
   });
 }
 
-function summarizeParsedEvent(parsed, decoded, source) {
+function summarizeParsedEvent(parsed, decoded, source, options = {}) {
   const decoderId = decoded.decoderId || null;
   const prefix = decoderId ? `Box ${decoderId}` : source;
   const torName = (parsed.torName || 'record').toString();
+  const duplicate = Boolean(options.duplicate);
 
   if (torName === 'passing') {
-    const transponder = decoded.tranCode || decoded.transponder || 'unknown';
+    const transponder = String(decoded.tranCode || decoded.transponder || 'unknown');
     const passingNumber = decoded.passingNumber != null ? `pass #${decoded.passingNumber}` : null;
     const strength = decoded.strength != null ? `strength ${decoded.strength}` : null;
     const hits = decoded.hits != null ? `${decoded.hits} hits` : null;
     const when = formatEventTime(decoded.utcTime || decoded.rtcTime);
-    const parts = [
-      `Transponder ${transponder}`,
+    const details = [
       passingNumber,
       when ? `at ${when}` : null,
       strength,
-      hits
+      hits,
+      duplicate ? 'duplicate' : null
     ].filter(Boolean);
     return {
       at: new Date().toISOString(),
       type: 'passing',
       source,
-      summary: `${prefix}: ${parts.join(' | ')}`
+      duplicate,
+      transponder,
+      prefix,
+      details,
+      summary: `${prefix}: Transponder ${transponder}${details.length ? ` | ${details.join(' | ')}` : ''}`
     };
   }
 
@@ -284,6 +289,10 @@ async function main() {
       resyncTcpClients();
     }
   };
+  const clearRecentEvents = () => {
+    state.clearRecentEvents();
+    persistRecentEvents([]);
+  };
 
 
   const gracefulShutdown = async (reason, exitCode = 0, isRestart = false) => {
@@ -330,6 +339,7 @@ async function main() {
     state,
     requestRestart,
     setTarget,
+    clearRecentEvents,
     setTimerInterval,
     logDir,
     logPrefixes: { main: "p3", http: "p3-http", json: "p3-json", "post-errors": "p3-post-errors" }
@@ -450,6 +460,9 @@ async function main() {
 
 
   const suppressStatus = Boolean(argv.suppressStatus || cfg.logging?.suppressStatus);
+  const transponderDuplicateWindowSec = Math.max(0, Number(cfg.defaults?.transponderDuplicateWindowSec ?? 10) || 0);
+  const transponderDuplicateWindowMs = transponderDuplicateWindowSec * 1000;
+  const lastAcceptedTransponders = new Map();
   const isStatusRecord = (p) => {
     const torIsStatus = (typeof p.tor === 'number') && (p.tor === 0x0002);
     const name = (p.torName || '').toString().trim().toLowerCase();
@@ -478,17 +491,6 @@ async function main() {
       return;
     }
 
-    state.onParseResult(parsed);
-
-    if (!parsed.crc?.ok) {
-      logger.warnMeta('P3 CRC mismatch (parsed anyway)', {
-        tor: `0x${parsed.tor.toString(16).padStart(4,'0')}`,
-        torName: parsed.torName,
-        crcIn: parsed.crc.in,
-        crcCalc: parsed.crc.calc
-      });
-    }
-
     // Build decoded (top-level convenience object)
     const decoded = {};
     for (const f of parsed.fields) {
@@ -498,6 +500,40 @@ async function main() {
       if (decoded[key] === undefined) decoded[key] = f.value;
       else if (Array.isArray(decoded[key])) decoded[key].push(f.value);
       else decoded[key] = [decoded[key], f.value];
+    }
+
+    const torName = (parsed.torName || '').toString().trim().toLowerCase();
+    if (torName === 'passing' && transponderDuplicateWindowMs > 0) {
+      const transponderKey = String(decoded.tranCode || decoded.transponder || '').trim();
+      const eventTimeMsRaw = Number(decoded.utcTime || decoded.rtcTime || Date.now());
+      const eventTimeMs = Number.isFinite(eventTimeMsRaw)
+        ? (eventTimeMsRaw > 1e12 ? Math.round(eventTimeMsRaw / 1000) : eventTimeMsRaw)
+        : Date.now();
+      if (transponderKey) {
+        const lastAcceptedAt = lastAcceptedTransponders.get(transponderKey);
+        if (lastAcceptedAt != null && (eventTimeMs - lastAcceptedAt) < transponderDuplicateWindowMs) {
+          state.addRecentEvent(summarizeParsedEvent(parsed, decoded, source, { duplicate: true }));
+          persistRecentEvents(state.snapshot().recentEvents);
+          logger.infoMeta('Duplicate transponder passing suppressed', {
+            source,
+            transponder: transponderKey,
+            duplicateWindowSec: transponderDuplicateWindowSec
+          });
+          return;
+        }
+        lastAcceptedTransponders.set(transponderKey, eventTimeMs);
+      }
+    }
+
+    state.onParseResult(parsed);
+
+    if (!parsed.crc?.ok) {
+      logger.warnMeta('P3 CRC mismatch (parsed anyway)', {
+        tor: `0x${parsed.tor.toString(16).padStart(4,'0')}`,
+        torName: parsed.torName,
+        crcIn: parsed.crc.in,
+        crcCalc: parsed.crc.calc
+      });
     }
 
     // Commonly useful fields for concise console logging
@@ -599,6 +635,12 @@ async function main() {
     };
 
     const clientKey = (target) => `${target.ip}:${target.port}`;
+    const syncTcpTargetStatuses = () => {
+      state.setTargets(tcpTargets.map((target) => ({
+        ...target,
+        status: tcpClients.get(clientKey(target))?.connected ? 'connected' : 'disconnected'
+      })));
+    };
 
     const scheduleReconnect = (client, reason) => {
       if (stopping) return;
@@ -701,6 +743,8 @@ async function main() {
         tcpClients.set(key, client);
         connectTcpClient(client);
       });
+
+      syncTcpTargetStatuses();
     };
 
     resyncTcpClients();

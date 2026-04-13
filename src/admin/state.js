@@ -112,6 +112,9 @@ function createState() {
     addRecentEvent(event) {
       pushRecentEvent(event);
     },
+    clearRecentEvents() {
+      s.recentEvents = [];
+    },
     setRecentEvents(events) {
       s.recentEvents = Array.isArray(events)
         ? events
