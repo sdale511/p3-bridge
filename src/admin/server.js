@@ -468,23 +468,40 @@ function escapeHtml(value){
     .split('"').join('&quot;')
     .split("'").join('&#39;');
 }
-function targetRows(s){
-  const targets = Array.isArray(s.targets) && s.targets.length
+const targetPalette = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2', '#65a30d', '#db2777'];
+function targetsForDisplay(s){
+  return Array.isArray(s.targets) && s.targets.length
     ? s.targets
     : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+}
+function targetKey(target){
+  return escapeHtml(fmt(target.ip)) + ':' + escapeHtml(fmt(target.port));
+}
+function targetColorMap(s){
+  const map = {};
+  targetsForDisplay(s).forEach((target, idx) => {
+    map[targetKey(target)] = targetPalette[idx % targetPalette.length];
+  });
+  return map;
+}
+function colorSwatch(color){
+  return '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + color + ';margin-right:6px;vertical-align:middle"></span>';
+}
+function targetRows(s){
+  const targets = targetsForDisplay(s);
+  const colors = targetColorMap(s);
   const label = targets.length > 1 ? 'Targets' : 'Target';
   const body = targets.length
     ? targets.map((target) => {
         const status = target.status || (s.tcpConnected ? 'connected' : 'disconnected');
-        return escapeHtml(fmt(target.ip)) + ':' + escapeHtml(fmt(target.port)) + ' <span class="muted">(' + escapeHtml(status) + ')</span>';
+        const key = targetKey(target);
+        return colorSwatch(colors[key] || '#6b7280') + key + ' <span class="muted">(' + escapeHtml(status) + ')</span>';
       }).join('<br/>')
     : '—';
   return '<b>' + label + ':</b><br/>' + body;
 }
 function targetListValue(s){
-  const targets = Array.isArray(s.targets) && s.targets.length
-    ? s.targets
-    : [{ ip: s.ip, port: s.port }].filter((target) => target.ip || target.port);
+  const targets = targetsForDisplay(s);
   return targets.map((target) => fmt(target.ip) + ':' + fmt(target.port)).join('\\n');
 }
 function parseTargets(text){
@@ -503,20 +520,23 @@ function parseTargets(text){
       return { ip, port };
     });
 }
-function eventFeedHtml(events){
+function eventFeedHtml(events, s){
   if(!Array.isArray(events) || !events.length) return '<span class="muted">No transponder events received yet.</span>';
+  const colors = targetColorMap(s || {});
   return events.map((event) => {
     const at = event && event.at ? new Date(event.at) : null;
     const ts = at && !Number.isNaN(at.getTime())
       ? at.toLocaleTimeString('en-US', { hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit' })
       : '—';
+    const sourceColor = colors[escapeHtml(event && event.source ? event.source : '')] || '#6b7280';
+    const swatch = colorSwatch(sourceColor);
     if(event && event.type === 'passing' && event.transponder){
       const color = event.duplicate ? '#b91c1c' : 'inherit';
       const details = Array.isArray(event.details) ? event.details.map((part) => escapeHtml(part)).join(' | ') : '';
       const body = escapeHtml(event.prefix || 'Event') + ': Transponder <span style="color:' + color + ';font-weight:600">' + escapeHtml(event.transponder) + '</span>' + (details ? ' | ' + details : '');
-      return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + body + '</div>';
+      return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + body + '</div>';
     }
-    return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + escapeHtml(event.summary || 'event') + '</div>';
+    return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + escapeHtml(event.summary || 'event') + '</div>';
   }).join('');
 }
 
@@ -541,7 +561,7 @@ async function refresh(){
       lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
     }
     document.getElementById('status').innerHTML = lines.join('<br/>');
-    document.getElementById('eventFeed').innerHTML = eventFeedHtml(s.recentEvents);
+    document.getElementById('eventFeed').innerHTML = eventFeedHtml(s.recentEvents, s);
     document.getElementById('updated').textContent = 'Updated ' + j.at;
   }catch(e){
     document.getElementById('status').textContent = 'Error: ' + e.message;
