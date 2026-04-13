@@ -4,6 +4,7 @@ const fs = require('fs');
 const net = require('net');
 const dgram = require('dgram');
 const path = require('path');
+const { spawn } = require('child_process');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
@@ -156,6 +157,10 @@ function createRecentEventPersister(filePath) {
   };
 }
 
+function isSystemdManaged() {
+  return Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM || process.env.NOTIFY_SOCKET);
+}
+
 async function main() {
   const argv = yargs(hideBin(process.argv))
     .scriptName('p3-bridge')
@@ -300,6 +305,21 @@ async function main() {
     stopping = true;
 
     logger.warnMeta(isRestart ? 'Restarting' : 'Shutting down', { reason });
+
+    if (isRestart && !isSystemdManaged()) {
+      try {
+        const child = spawn(process.execPath, process.argv.slice(1), {
+          cwd: process.cwd(),
+          env: process.env,
+          detached: true,
+          stdio: 'ignore'
+        });
+        child.unref();
+        logger.infoMeta('Spawned replacement process for restart', { pid: child.pid });
+      } catch (err) {
+        logger.errorMeta('Failed to spawn replacement process for restart', { message: err?.message });
+      }
+    }
 
     try { postQueue.stop(); } catch (_) {}
     try { if (adminHandle) await adminHandle.stop(); } catch (_) {}
