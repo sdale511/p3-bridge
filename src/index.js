@@ -192,11 +192,18 @@ async function main() {
 
   const logDir = cfg.logging?.dir || path.join(process.cwd(), 'logs');
   const recentEventsPath = path.join(logDir, 'transponder-events.json');
+  const logDatePattern = cfg.logging?.datePattern || 'YYYY-MM-DD';
+  const logMaxFiles = cfg.logging?.maxFiles || '7d';
+  const logLevel = cfg.logging?.level || 'info';
 
   const logger = makeLogger({
     name: 'main',
     dir: logDir,
     filenamePrefix: 'p3',
+    filename: cfg.logging?.filename,
+    datePattern: logDatePattern,
+    maxFiles: logMaxFiles,
+    level: logLevel,
     enableConsole: !argv.noConsoleLog,
     enableFile: !argv.noFileLog
   });
@@ -206,6 +213,10 @@ async function main() {
     name: 'http',
     dir: logDir,
     filenamePrefix: 'p3-http',
+    filename: cfg.logging?.httpFilename,
+    datePattern: logDatePattern,
+    maxFiles: logMaxFiles,
+    level: logLevel,
     enableConsole: false,
     enableFile: !argv.noHttpLog
   });
@@ -214,6 +225,10 @@ async function main() {
     name: 'json',
     dir: logDir,
     filenamePrefix: 'p3-json',
+    filename: cfg.logging?.jsonFilename,
+    datePattern: logDatePattern,
+    maxFiles: logMaxFiles,
+    level: logLevel,
     enableConsole: false,
     enableFile: !argv.noJsonLog
   });
@@ -222,6 +237,9 @@ async function main() {
     name: 'post-errors',
     dir: logDir,
     filenamePrefix: 'p3-post-errors',
+    datePattern: logDatePattern,
+    maxFiles: logMaxFiles,
+    level: logLevel,
     enableConsole: false,
     enableFile: true
   });

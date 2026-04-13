@@ -1,13 +1,19 @@
 {
   "defaults": {
     "mode": "tcp",
-    "tcpHost": "192.168.4.75",
     "tcpPort": 5403,
-    "udpPort": 5303,
-    "bindAddress": "0.0.0.0",
+    "udpListenPort": 5303,
+    "udpSendPort": 5403,
+    "tcpHosts": [
+      {
+        "ip": "192.168.4.75",
+        "port": 5403
+      }
+    ],
     "connectTimeoutMs": 8000
   },
   "post": {
+    "enabled": true,
     "baseUrl": "http://localhost:3000",
     "path": "/ingest",
     "method": "POST",
@@ -18,8 +24,7 @@
     "maxRetryDelayMs": 8000,
     "headers": {
       "Content-Type": "application/json"
-    },
-    "enabled": true
+    }
   },
   "logging": {
     "dir": "./logs",
@@ -32,7 +37,7 @@
     "httpFilename": "p3-http-%DATE%.log",
     "jsonFilename": "p3-json-%DATE%.log",
     "datePattern": "YYYY-MM-DD",
-    "maxFiles": "14d",
+    "maxFiles": "7d",
     "suppressStatus": true
   },
   "decoder": {
@@ -53,7 +58,7 @@
   "timer": {
     "enabled": true,
     "baseUrl": "http://localhost:3000",
-    "path": "/ingest",
+    "path": "/timerWebhook",
     "intervalSec": 10,
     "timeoutMs": 5000,
     "retries": 2,

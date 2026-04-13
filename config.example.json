@@ -20,6 +20,7 @@
     "retries": 5,
     "retryDelayMs": 500,
     "retryBackoffMultiplier": 2,
+    "maxRetryDelayMs": 8000,
     "headers": {
       "Content-Type": "application/json"
     }
@@ -30,8 +31,13 @@
     "file": true,
     "httpFile": true,
     "jsonFile": true,
-    "suppressStatus": false,
-    "level": "info"
+    "level": "info",
+    "filename": "p3-bridge-%DATE%.log",
+    "httpFilename": "p3-http-%DATE%.log",
+    "jsonFilename": "p3-json-%DATE%.log",
+    "datePattern": "YYYY-MM-DD",
+    "maxFiles": "7d",
+    "suppressStatus": true
   },
   "decoder": {
     "reconnect": {

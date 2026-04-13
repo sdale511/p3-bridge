@@ -8,7 +8,7 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function makeLogger({ name, dir, filenamePrefix, enableConsole, enableFile }) {
+function makeLogger({ name, dir, filenamePrefix, filename, datePattern, maxFiles, level, enableConsole, enableFile }) {
   const transports = [];
   if (enableConsole) {
     transports.push(new winston.transports.Console({
@@ -24,9 +24,9 @@ function makeLogger({ name, dir, filenamePrefix, enableConsole, enableFile }) {
     ensureDir(dir);
     transports.push(new DailyRotateFile({
       dirname: dir,
-      filename: `${filenamePrefix}-%DATE%.log`,
-      datePattern: 'YYYY-MM-DD',
-      maxFiles: '30d',
+      filename: filename || `${filenamePrefix}-%DATE%.log`,
+      datePattern: datePattern || 'YYYY-MM-DD',
+      maxFiles: maxFiles || '7d',
       zippedArchive: false,
       format: winston.format.combine(
         winston.format.timestamp(),
@@ -36,7 +36,7 @@ function makeLogger({ name, dir, filenamePrefix, enableConsole, enableFile }) {
   }
 
   const logger = winston.createLogger({
-    level: 'info',
+    level: level || 'info',
     defaultMeta: { logger: name },
     transports
   });
