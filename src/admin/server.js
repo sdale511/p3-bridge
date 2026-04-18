@@ -460,6 +460,29 @@ async function api(path, opts){
   return j;
 }
 function fmt(n){ return (n==null)?'—':String(n); }
+function formatDuration(totalSec){
+  let sec = Number(totalSec);
+  if (!Number.isFinite(sec) || sec < 0) return '—';
+  sec = Math.floor(sec);
+  if (sec < 60) return sec + ' second' + (sec === 1 ? '' : 's');
+
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
+  const seconds = sec % 60;
+  const parts = [];
+  function pushPart(value, label){
+    if (!value) return;
+    parts.push(value + ' ' + label + (value === 1 ? '' : 's'));
+  }
+
+  pushPart(days, 'day');
+  pushPart(hours, 'hour');
+  pushPart(minutes, 'minute');
+  if (!days && !hours && seconds) pushPart(seconds, 'second');
+
+  return parts.slice(0, 3).join(' ');
+}
 function escapeHtml(value){
   return String(value)
     .split('&').join('&amp;')
@@ -551,7 +574,7 @@ async function refresh(){
     if(tint && !tint.value && j?.state?.timerIntervalSec) tint.value = String(j.state.timerIntervalSec);
 
     const lines = [];
-    lines.push('<b>Uptime:</b> ' + fmt(s.uptimeSec) + 's');
+    lines.push('<b>Uptime:</b> ' + formatDuration(s.uptimeSec));
     lines.push('<b>Build:</b> ' + fmt(j.version));
     lines.push('<b>Mode:</b> ' + fmt(s.mode));
     lines.push(targetRows(s));
