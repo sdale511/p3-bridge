@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { execSync } = require('child_process');
+const { execSync, execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -250,6 +253,42 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
     setTimeout(() => requestRestart('admin requested restart'), 250).unref();
   });
 
+  app.post('/admin/api/update', async (req, res) => {
+    try {
+      const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).toString().trim();
+
+      const result = await execFileAsync('git', ['pull', '--ff-only'], {
+        cwd: process.cwd(),
+        timeout: 120000,
+        maxBuffer: 1024 * 1024
+      });
+
+      const stdout = (result.stdout || '').trim();
+      const stderr = (result.stderr || '').trim();
+      logger.infoMeta('Admin update completed', { branch, stdout: stdout || null, stderr: stderr || null });
+
+      res.json({
+        ok: true,
+        at: nowIso(),
+        branch,
+        restarting: true,
+        restartDelayMs: 3000,
+        output: [stdout, stderr].filter(Boolean).join('\n').trim() || 'Already up to date.'
+      });
+      setTimeout(() => requestRestart('admin requested update restart'), 3000).unref();
+    } catch (e) {
+      const output = [e?.stdout, e?.stderr].filter(Boolean).join('\n').trim();
+      logger.errorMeta('Admin update failed', { message: e?.message, output: output || null });
+      res.status(500).json({
+        ok: false,
+        error: output || e?.message || 'git pull failed'
+      });
+    }
+  });
+
   app.post('/admin/api/events/clear', (req, res) => {
     try {
       if (typeof clearRecentEvents === 'function') clearRecentEvents();
@@ -413,10 +452,12 @@ app.get('/admin', (req, res) => {
       <div id="status">Loading…</div>
       <small id="updated"></small>
     </div>
-    <div class="card">
+    <div class="card" style="min-width:220px;max-width:240px">
       <h3>Actions</h3>
       <button id="restartBtn">Restart service</button>
-      <p><small>Restart exits the process; systemd restarts it.</small></p>
+      <button id="updateBtn" style="margin-top:8px">Update from git and restart</button>
+      <p><small>Restart stops the app. Update pulls latest code, then restarts.</small></p>
+      <div id="actionResult" style="margin-top:8px"></div>
     </div>
     <div class="card" style="min-width:320px;max-width:360px">
       <h3>Targets</h3>
@@ -595,7 +636,25 @@ async function refresh(){
 const __el_restartBtn = document.getElementById('restartBtn');
 if(__el_restartBtn) __el_restartBtn.onclick = async () => {
   if(!confirm('Restart p3-bridge now?')) return;
-  try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ alert(e.message); }
+  const out = document.getElementById('actionResult');
+  if(out) out.innerHTML = '<small>Restarting service…</small>';
+  try{ await api('/admin/api/restart', {method:'POST'}); }catch(e){ if(out) out.innerHTML = '<small style="color:#b00">Error: ' + e.message + '</small>'; else alert(e.message); }
+};
+
+const __el_updateBtn = document.getElementById('updateBtn');
+if(__el_updateBtn) __el_updateBtn.onclick = async () => {
+  const out = document.getElementById('actionResult');
+  if(!confirm('Pull the latest code from git and restart p3-bridge?')) return;
+  if(out) out.innerHTML = '<small>Pulling latest code…</small>';
+  try{
+    const j = await api('/admin/api/update', {method:'POST'});
+    if(out) out.innerHTML =
+      '<small>Pull complete. Restarting in ' + Math.max(1, Math.round((Number(j.restartDelayMs) || 3000) / 1000)) + 's.</small>' +
+      '<div class="codebox" style="margin-top:6px;max-height:140px;white-space:pre-wrap">' + escapeHtml(j.output || 'Update complete.') + '</div>';
+  }catch(e){
+    if(out) out.innerHTML = '<small style="color:#b00">Error: ' + escapeHtml(e.message) + '</small>';
+    else alert(e.message);
+  }
 };
 
 const __el_clearEventsBtn = document.getElementById('clearEventsBtn');
