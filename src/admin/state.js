@@ -1,4 +1,5 @@
-function createState() {
+function createState(options = {}) {
+  const maxRecentEvents = Math.max(1, Number(options.maxRecentEvents) || 100);
   const startedAt = Date.now();
 
   const s = {
@@ -21,6 +22,8 @@ function createState() {
     msgParseErr: 0,
     msgSuppressed: 0,
     msgCrcBad: 0,
+    passingValid: 0,
+    passingDuplicate: 0,
 
     msgByTorName: {},
 
@@ -28,6 +31,10 @@ function createState() {
     postFail: 0,
     postQueued: 0,
     postQueueSize: 0,
+    postRetriesTotal: 0,
+    postRetry429: 0,
+    postRetry5xx: 0,
+    postRetryNetwork: 0,
 
     lastMessageAt: null,
     lastPostAt: null,
@@ -46,7 +53,33 @@ function createState() {
   function pushRecentEvent(event) {
     if (!event || typeof event !== 'object') return;
     s.recentEvents.unshift(event);
-    if (s.recentEvents.length > 50) s.recentEvents.length = 50;
+    if (s.recentEvents.length > maxRecentEvents) s.recentEvents.length = maxRecentEvents;
+  }
+
+  function resetStatsOnly() {
+    s.msgTotal = 0;
+    s.msgOk = 0;
+    s.msgParseErr = 0;
+    s.msgSuppressed = 0;
+    s.msgCrcBad = 0;
+    s.passingValid = 0;
+    s.passingDuplicate = 0;
+    s.msgByTorName = {};
+
+    s.postOk = 0;
+    s.postFail = 0;
+    s.postQueued = 0;
+    s.postRetriesTotal = 0;
+    s.postRetry429 = 0;
+    s.postRetry5xx = 0;
+    s.postRetryNetwork = 0;
+
+    s.lastMessageAt = null;
+    s.lastPostAt = null;
+
+    s.timerOk = 0;
+    s.timerFail = 0;
+    s.lastTimerAt = null;
   }
 
   return {
@@ -109,8 +142,19 @@ function createState() {
       if (parsed?.crc && parsed.crc.ok === false) s.msgCrcBad += 1;
       incMap(s.msgByTorName, parsed.torName || 'unknown');
     },
+    onPassing({ duplicate } = {}) {
+      if (duplicate) s.passingDuplicate += 1;
+      else s.passingValid += 1;
+    },
     addRecentEvent(event) {
       pushRecentEvent(event);
+    },
+    updateRecentEvent(eventId, patch = {}) {
+      if (!eventId) return false;
+      const event = s.recentEvents.find((item) => item && item.id === eventId);
+      if (!event) return false;
+      Object.assign(event, patch);
+      return true;
     },
     clearRecentEvents() {
       s.recentEvents = [];
@@ -119,7 +163,7 @@ function createState() {
       s.recentEvents = Array.isArray(events)
         ? events
           .filter((event) => event && typeof event === 'object')
-          .slice(0, 50)
+          .slice(0, maxRecentEvents)
         : [];
     },
     onPostResult({ ok, queued } = {}) {
@@ -130,6 +174,19 @@ function createState() {
         s.postFail += 1;
       }
       if (queued) s.postQueued += 1;
+    },
+    onPostRetry({ status, networkError } = {}) {
+      s.postRetriesTotal += 1;
+      if (networkError) {
+        s.postRetryNetwork += 1;
+        return;
+      }
+      const statusNum = Number(status);
+      if (statusNum === 429) {
+        s.postRetry429 += 1;
+      } else if (statusNum >= 500 && statusNum <= 599) {
+        s.postRetry5xx += 1;
+      }
     },
     setPostQueueSize(n) {
       s.postQueueSize = Number(n) || 0;
@@ -144,6 +201,9 @@ function createState() {
       } else {
         s.timerFail += 1;
       }
+    },
+    resetStats() {
+      resetStatsOnly();
     },
     snapshot() {
       return {

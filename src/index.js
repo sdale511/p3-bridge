@@ -4,6 +4,7 @@ const fs = require('fs');
 const net = require('net');
 const dgram = require('dgram');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
@@ -74,6 +75,7 @@ function summarizeParsedEvent(parsed, decoded, source, options = {}) {
   const prefix = decoderId ? `Box ${decoderId}` : source;
   const torName = (parsed.torName || 'record').toString();
   const duplicate = Boolean(options.duplicate);
+  const eventId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   if (torName === 'passing') {
     const transponder = String(decoded.tranCode || decoded.transponder || 'unknown');
@@ -89,6 +91,7 @@ function summarizeParsedEvent(parsed, decoded, source, options = {}) {
       duplicate ? 'duplicate' : null
     ].filter(Boolean);
     return {
+      id: eventId,
       at: new Date().toISOString(),
       type: 'passing',
       source,
@@ -104,6 +107,7 @@ function summarizeParsedEvent(parsed, decoded, source, options = {}) {
     const code = decoded.code || 'loop trigger';
     const when = formatEventTime(decoded.utcTime || decoded.rtcTime);
     return {
+      id: eventId,
       at: new Date().toISOString(),
       type: 'loopTrigger',
       source,
@@ -112,6 +116,7 @@ function summarizeParsedEvent(parsed, decoded, source, options = {}) {
   }
 
   return {
+    id: eventId,
     at: new Date().toISOString(),
     type: torName,
     source,
@@ -119,20 +124,22 @@ function summarizeParsedEvent(parsed, decoded, source, options = {}) {
   };
 }
 
-function loadRecentEvents(filePath) {
+function loadRecentEvents(filePath, maxEntries = 100) {
   try {
     if (!fs.existsSync(filePath)) return [];
     const raw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(raw);
+    const limit = Math.max(1, Number(maxEntries) || 100);
     return Array.isArray(parsed)
-      ? parsed.filter((event) => event && typeof event === 'object').slice(0, 50)
+      ? parsed.filter((event) => event && typeof event === 'object').slice(0, limit)
       : [];
   } catch (_) {
     return [];
   }
 }
 
-function createRecentEventPersister(filePath) {
+function createRecentEventPersister(filePath, maxEntries = 100) {
+  const limit = Math.max(1, Number(maxEntries) || 100);
   let pending = false;
   let queuedEvents = null;
 
@@ -152,13 +159,37 @@ function createRecentEventPersister(filePath) {
   };
 
   return (events) => {
-    queuedEvents = Array.isArray(events) ? events.slice(0, 50) : [];
+    queuedEvents = Array.isArray(events) ? events.slice(0, limit) : [];
     if (!pending) void flush();
   };
 }
 
 function isSystemdManaged() {
   return Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM || process.env.NOTIFY_SOCKET);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createAttemptRateLimiter(minIntervalMs) {
+  const intervalMs = Math.max(0, Number(minIntervalMs) || 0);
+  if (!intervalMs) {
+    return async () => {};
+  }
+
+  let nextAllowedAt = 0;
+  let chain = Promise.resolve();
+  return async () => {
+    const waitForTurn = chain.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, nextAllowedAt - now);
+      if (waitMs > 0) await sleep(waitMs);
+      nextAllowedAt = Date.now() + intervalMs;
+    });
+    chain = waitForTurn.catch(() => {});
+    return waitForTurn;
+  };
 }
 
 async function main() {
@@ -255,9 +286,10 @@ async function main() {
   });
 
 
-  const state = createState();
-  state.setRecentEvents(loadRecentEvents(recentEventsPath));
-  const persistRecentEvents = createRecentEventPersister(recentEventsPath);
+  const recentEventLimit = Math.max(1, Number(cfg.defaults?.transponderEventLogEntries) || 100);
+  const state = createState({ maxRecentEvents: recentEventLimit });
+  state.setRecentEvents(loadRecentEvents(recentEventsPath, recentEventLimit));
+  const persistRecentEvents = createRecentEventPersister(recentEventsPath, recentEventLimit);
   syncStateTargets(state, mode, tcpTargets, udpTargetIp, udpTargetPort);
 
   let adminHandle = null;
@@ -297,6 +329,16 @@ async function main() {
   const clearRecentEvents = () => {
     state.clearRecentEvents();
     persistRecentEvents([]);
+  };
+  const updateRecentEventPost = (eventId, patch = {}) => {
+    if (!eventId) return;
+    if (state.updateRecentEvent(eventId, patch)) {
+      persistRecentEvents(state.snapshot().recentEvents);
+    }
+  };
+  const resetStats = () => {
+    state.resetStats();
+    if (postEnabled) state.setPostQueueSize(postQueue.size());
   };
 
 
@@ -349,9 +391,6 @@ async function main() {
     setTimeout(() => process.exit(exitCode), 150).unref?.();
   };
 
-  // Keep admin status accurate for queued posts
-  setInterval(() => state.setPostQueueSize(postQueue.size()), 5000).unref?.();
-
   adminHandle = startAdminServer({
     logger,
     cfgPath,
@@ -360,6 +399,7 @@ async function main() {
     requestRestart,
     setTarget,
     clearRecentEvents,
+    resetStats,
     setTimerInterval,
     logDir,
     logPrefixes: { main: "p3", http: "p3-http", json: "p3-json", "post-errors": "p3-post-errors" }
@@ -369,12 +409,30 @@ async function main() {
 
   const postEnabled = (cfg.post?.enabled !== false) && !argv.noPost;
   if (!postEnabled) logger.info('POST disabled (dry-run mode)');
+  const waitForPostAttempt = createAttemptRateLimiter(cfg.post?.minIntervalMs ?? 500);
 
   const postQueue = new PostQueue({
     filePath: path.join(logDir, 'post-errors-queue.json'),
     errorLogger: postErrorsLogger,
     intervalMs: 30_000,
     drainMaxPerTick: cfg.post?.queueDrainMaxPerTick ?? 5,
+    onChange: (size) => state.setPostQueueSize(size),
+    onEntryResult: (entry, result) => {
+      if (!entry?.eventId) return;
+      if (result?.ok) {
+        updateRecentEventPost(entry.eventId, {
+          postStatus: 'posted',
+          postLastStatus: result.status ?? null,
+          postLastError: null
+        });
+      } else {
+        updateRecentEventPost(entry.eventId, {
+          postStatus: 'queued',
+          postLastStatus: result?.status ?? null,
+          postLastError: result?.error ?? null
+        });
+      }
+    },
     postFn: async (entry) => {
       return postWithRetries({
         logger,
@@ -386,7 +444,17 @@ async function main() {
         timeoutMs: cfg.post.timeoutMs || 8000,
         retries: cfg.post.retries ?? 5,
         retryDelayMs: cfg.post.retryDelayMs ?? 500,
-        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2
+        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2,
+        maxRetryDelayMs: cfg.post.maxRetryDelayMs ?? 8000,
+        beforeAttempt: waitForPostAttempt,
+        onRetry: (info) => {
+          state.onPostRetry(info);
+          updateRecentEventPost(entry.eventId, {
+            postStatus: 'retrying',
+            postRetries: Math.max(0, Number(info.attempt) || 0),
+            postLastStatus: info.status ?? null
+          });
+        }
       });
     }
   });
@@ -532,6 +600,7 @@ async function main() {
       if (transponderKey) {
         const lastAcceptedAt = lastAcceptedTransponders.get(transponderKey);
         if (lastAcceptedAt != null && (eventTimeMs - lastAcceptedAt) < transponderDuplicateWindowMs) {
+          state.onPassing({ duplicate: true });
           state.addRecentEvent(summarizeParsedEvent(parsed, decoded, source, { duplicate: true }));
           persistRecentEvents(state.snapshot().recentEvents);
           logger.infoMeta('Duplicate transponder passing suppressed', {
@@ -546,6 +615,7 @@ async function main() {
     }
 
     state.onParseResult(parsed);
+    if (torName === 'passing') state.onPassing({ duplicate: false });
 
     if (!parsed.crc?.ok) {
       logger.warnMeta('P3 CRC mismatch (parsed anyway)', {
@@ -582,7 +652,8 @@ async function main() {
       raw: argv.debug ? parsed.raw : undefined
     };
 
-    state.addRecentEvent(summarizeParsedEvent(parsed, decoded, source));
+    const recentEvent = summarizeParsedEvent(parsed, decoded, source);
+    state.addRecentEvent(recentEvent);
     persistRecentEvents(state.snapshot().recentEvents);
 
     jsonLogger.info(JSON.stringify(payload));
@@ -608,25 +679,45 @@ async function main() {
         timeoutMs: cfg.post.timeoutMs || 8000,
         retries: cfg.post.retries ?? 5,
         retryDelayMs: cfg.post.retryDelayMs ?? 500,
-        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2
+        retryBackoffMultiplier: cfg.post.retryBackoffMultiplier ?? 2,
+        maxRetryDelayMs: cfg.post.maxRetryDelayMs ?? 8000,
+        beforeAttempt: waitForPostAttempt,
+        onRetry: (info) => {
+          state.onPostRetry(info);
+          updateRecentEventPost(recentEvent.id, {
+            postStatus: 'retrying',
+            postRetries: Math.max(0, Number(info.attempt) || 0),
+            postLastStatus: info.status ?? null
+          });
+        }
       });
 
       if (!res.ok) {
         logger.errorMeta('Failed to post record (queued)', { torName: payload.torName, status: res.status, source, ...(tranCode ? { tranCode } : {}) });
-        postQueue.enqueue({ method, url, headers, data: payload, reason: `HTTP ${res.status}` });
+        updateRecentEventPost(recentEvent.id, {
+          postStatus: 'queued',
+          postLastStatus: res.status
+        });
+        postQueue.enqueue({ method, url, headers, data: payload, reason: `HTTP ${res.status}`, eventId: recentEvent.id });
         state.onPostResult({ ok: false, queued: true });
         state.setPostQueueSize(postQueue.size());
       } else {
         logger.infoMeta('Posted record', { torName: payload.torName, status: res.status, source, ...(tranCode ? { tranCode } : {}) });
+        updateRecentEventPost(recentEvent.id, {
+          postStatus: 'posted',
+          postLastStatus: res.status
+        });
         state.onPostResult({ ok: true, queued: false });
-        // On success, try to replay any queued errors immediately.
-        void postQueue.drain('onSuccess');
       }
     } catch (e) {
       // Network / TLS / timeout errors after retries. Do NOT crash the server.
       const msg = e?.message || 'post exception';
       logger.errorMeta('Post exception (queued)', { torName: payload.torName, message: msg, source, ...(tranCode ? { tranCode } : {}) });
-      postQueue.enqueue({ method, url, headers, data: payload, reason: msg });
+      updateRecentEventPost(recentEvent.id, {
+        postStatus: 'queued',
+        postLastError: msg
+      });
+      postQueue.enqueue({ method, url, headers, data: payload, reason: msg, eventId: recentEvent.id });
       state.onPostResult({ ok: false, queued: true });
       state.setPostQueueSize(postQueue.size());
     }

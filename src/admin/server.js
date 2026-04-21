@@ -139,7 +139,7 @@ async function atomicWriteJson(filePath, obj) {
   await fs.promises.rename(tmp, filePath);
 }
 
-function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, clearRecentEvents, setTimerInterval, logDir, logPrefixes }) {
+function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setTarget, clearRecentEvents, resetStats, setTimerInterval, logDir, logPrefixes }) {
   let pkgVersion = '';
   try {
     const pj = JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
@@ -220,7 +220,7 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
         'admin.enabled', 'admin.host', 'admin.port', 'admin.token',
         // Posting
         'post.enabled', 'post.baseUrl', 'post.path', 'post.method',
-        'post.timeoutMs', 'post.retries', 'post.retryDelayMs', 'post.retryBackoffMultiplier',
+        'post.timeoutMs', 'post.retries', 'post.retryDelayMs', 'post.retryBackoffMultiplier', 'post.maxRetryDelayMs', 'post.minIntervalMs',
         'post.queueDrainMaxPerTick',
         // Timer webhook
         'timer.enabled', 'timer.baseUrl', 'timer.path', 'timer.intervalSec', 'timer.timeoutMs', 'timer.retries', 'timer.retryDelayMs', 'timer.retryBackoffMultiplier',
@@ -296,6 +296,16 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
     } catch (e) {
       logger.errorMeta('Admin event clear failed', { message: e?.message });
       res.status(500).json({ ok: false, error: e?.message || 'event clear failed' });
+    }
+  });
+
+  app.post('/admin/api/stats/clear', (req, res) => {
+    try {
+      if (typeof resetStats === 'function') resetStats();
+      res.json({ ok: true, at: nowIso(), cleared: true });
+    } catch (e) {
+      logger.errorMeta('Admin stats clear failed', { message: e?.message });
+      res.status(500).json({ ok: false, error: e?.message || 'stats clear failed' });
     }
   });
 
@@ -456,6 +466,7 @@ app.get('/admin', (req, res) => {
       <h3>Actions</h3>
       <button id="restartBtn">Restart service</button>
       <button id="updateBtn" style="margin-top:8px">Update from git and restart</button>
+      <button id="clearStatsBtn" style="margin-top:8px">Clear stats</button>
       <p><small>Restart stops the app. Update pulls latest code, then restarts.</small></p>
       <div id="actionResult" style="margin-top:8px"></div>
     </div>
@@ -485,10 +496,13 @@ app.get('/admin', (req, res) => {
   <div class="row" style="margin-top:10px">
     <div class="card" style="width:100%;min-width:320px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <h3 style="margin:0">Transponder Events</h3>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">Transponder Events</h3>
+          <small id="eventCount">0 entries</small>
+        </div>
         <button id="clearEventsBtn">Clear</button>
       </div>
-      <div id="eventFeed" class="codebox" style="max-height:360px"></div>
+      <div id="eventFeed" class="codebox" style="max-height:360px;overflow:auto;white-space:normal"></div>
       <small>Most recent events from any connected MYLAPS box.</small>
     </div>
   </div>
@@ -594,13 +608,21 @@ function eventFeedHtml(events, s){
       : '—';
     const sourceColor = colors[escapeHtml(event && event.source ? event.source : '')] || '#6b7280';
     const swatch = colorSwatch(sourceColor);
+    const postParts = [];
+    if (event && event.postStatus === 'posted') postParts.push('posted');
+    else if (event && event.postStatus === 'queued') postParts.push('queued');
+    else if (event && event.postStatus === 'retrying') postParts.push('retrying');
+    if (event && event.postRetries) postParts.push('retries ' + escapeHtml(event.postRetries));
+    const postInfo = postParts.length
+      ? ' <span class="muted">[' + postParts.join(' | ') + ']</span>'
+      : '';
     if(event && event.type === 'passing' && event.transponder){
       const color = event.duplicate ? '#b91c1c' : 'inherit';
       const details = Array.isArray(event.details) ? event.details.map((part) => escapeHtml(part)).join(' | ') : '';
       const body = escapeHtml(event.prefix || 'Event') + ': Transponder <span style="color:' + color + ';font-weight:600">' + escapeHtml(event.transponder) + '</span>' + (details ? ' | ' + details : '');
-      return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + body + '</div>';
+      return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + body + postInfo + '</div>';
     }
-    return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + escapeHtml(event.summary || 'event') + '</div>';
+    return '<div><span class="muted">' + escapeHtml(ts) + '</span> ' + swatch + escapeHtml(event.summary || 'event') + postInfo + '</div>';
   }).join('');
 }
 
@@ -608,6 +630,7 @@ async function refresh(){
   try{
     const j = await api('/admin/api/status');
     const s = j.state;
+    const events = Array.isArray(s.recentEvents) ? s.recentEvents : [];
     // populate target inputs if empty
     const tlist = document.getElementById('targetList');
     if(tlist && !tlist.value) tlist.value = targetListValue(s);
@@ -620,16 +643,34 @@ async function refresh(){
     lines.push('<b>Mode:</b> ' + fmt(s.mode));
     lines.push(targetRows(s));
     lines.push('<b>Messages:</b> total=' + fmt(s.msgTotal) + ', ok=' + fmt(s.msgOk) + ', parseErr=' + fmt(s.msgParseErr) + ', suppressed=' + fmt(s.msgSuppressed));
-    lines.push('<b>Posts:</b> ok=' + fmt(s.postOk) + ', fail=' + fmt(s.postFail) + ', queued=' + fmt(s.postQueued) + ', queueSize=' + fmt(s.postQueueSize));
+    lines.push(
+      '<b>Posts:</b> ok=' + fmt(s.postOk) +
+      ', fail=' + fmt(s.postFail) +
+      ', queued=' + fmt(s.postQueued) +
+      ', queueSize=' + fmt(s.postQueueSize)
+    );
+    lines.push(
+      '<b>Post Retries:</b> total=' + fmt(s.postRetriesTotal) +
+      ' (429=' + fmt(s.postRetry429) +
+      ', 5xx=' + fmt(s.postRetry5xx) +
+      ', network=' + fmt(s.postRetryNetwork) + ')'
+    );
     if (typeof s.timerOk !== 'undefined') {
       lines.push('<b>Timer:</b> ok=' + fmt(s.timerOk) + ', fail=' + fmt(s.timerFail) + ', last=' + (s.lastTimerAt || '')); 
     }
     document.getElementById('status').innerHTML = lines.join('<br/>');
-    document.getElementById('eventFeed').innerHTML = eventFeedHtml(s.recentEvents, s);
+    document.getElementById('eventFeed').innerHTML = eventFeedHtml(events, s);
+    const validHits = events.filter((event) => event && event.type === 'passing' && !event.duplicate).length;
+    const duplicateHits = events.filter((event) => event && event.type === 'passing' && event.duplicate).length;
+    document.getElementById('eventCount').textContent =
+      events.length + ' entr' + (events.length === 1 ? 'y' : 'ies') +
+      ' | valid ' + validHits +
+      ' | duplicate ' + duplicateHits;
     document.getElementById('updated').textContent = 'Updated ' + j.at;
   }catch(e){
     document.getElementById('status').textContent = 'Error: ' + e.message;
     document.getElementById('eventFeed').textContent = 'Error: ' + e.message;
+    document.getElementById('eventCount').textContent = '0 entries';
   }
 }
 
@@ -665,6 +706,21 @@ if(__el_clearEventsBtn) __el_clearEventsBtn.onclick = async () => {
     await refresh();
   }catch(e){
     alert(e.message);
+  }
+};
+
+const __el_clearStatsBtn = document.getElementById('clearStatsBtn');
+if(__el_clearStatsBtn) __el_clearStatsBtn.onclick = async () => {
+  const out = document.getElementById('actionResult');
+  if(!confirm('Clear dashboard stats counters?')) return;
+  if(out) out.innerHTML = '<small>Clearing stats…</small>';
+  try{
+    await api('/admin/api/stats/clear', {method:'POST'});
+    if(out) out.innerHTML = '<small>Stats cleared.</small>';
+    await refresh();
+  }catch(e){
+    if(out) out.innerHTML = '<small style="color:#b00">Error: ' + escapeHtml(e.message) + '</small>';
+    else alert(e.message);
   }
 };
 
@@ -844,18 +900,18 @@ updateHideToggle();
     <div class="row">
       <div class="card" style="flex:1;min-width:320px">
         <h3>Update settings (JSON patch)</h3>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px 0">
-          <button class="secBtn" data-sec="__full">Load full config</button>
-          <button class="secBtn" data-sec="post">Load post</button>
-          <button class="secBtn" data-sec="timer">Load timer</button>
-          <button class="secBtn" data-sec="logging">Load logging</button>
-          <button class="secBtn" data-sec="admin">Load admin</button>
-          <button class="secBtn" data-sec="defaults">Load defaults</button>
-          <button class="secBtn" data-sec="decoder.reconnect">Load decoder.reconnect</button>
-        </div>
         <div class="small">Current config (read-only)</div>
         <pre id="configCurrent" class="codebox"></pre>
         <div class="small" style="margin-top:8px">Edit JSON (only allowlisted keys are applied)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px 0">
+          <button class="secBtn" data-sec="__full">Full config</button>
+          <button class="secBtn" data-sec="post">Post</button>
+          <button class="secBtn" data-sec="timer">Timer</button>
+          <button class="secBtn" data-sec="logging">Logging</button>
+          <button class="secBtn" data-sec="admin">Admin</button>
+          <button class="secBtn" data-sec="defaults">Defaults</button>
+          <button class="secBtn" data-sec="decoder.reconnect">Decoder reconnect</button>
+        </div>
         <textarea id="patch" rows="14" spellcheck="false"></textarea>
         <div style="display:flex;gap:10px;margin-top:8px">
           <button id="applyBtn">Set</button>
@@ -865,8 +921,6 @@ updateHideToggle();
         <div id="applyResult"></div>
       </div>
     </div>
-    <h3>Raw snapshot</h3>
-    <pre id="raw"></pre>
   </main>
 
   <script>
@@ -877,15 +931,6 @@ async function api(path, opts){
   return j;
 }
 function fmt(n){ return (n==null)?'—':String(n); }
-
-async function refresh(){
-  try{
-    const j = await api('/admin/api/status');
-    document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
-  }catch(e){
-    document.getElementById('raw').textContent = 'Error: ' + e.message;
-  }
-}
 
 async function apply(persist){
   let patch;
@@ -945,8 +990,6 @@ if(patchEl){
 }
 
 loadSection('__full');
-refresh();
-setInterval(refresh, 2000);
   </script>
 </body>
 </html>`;

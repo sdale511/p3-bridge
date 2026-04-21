@@ -6,7 +6,7 @@
     "udpSendPort": 5403,
     "tcpHosts": [
       {
-        "ip": "192.168.1.98",
+        "ip": "192.168.1.97",
         "port": 5403
       },
       {
@@ -15,6 +15,7 @@
       }
     ],
     "transponderDuplicateWindowSec": 10,
+    "transponderEventLogEntries": 100,
     "connectTimeoutMs": 8000
   },
   "post": {
@@ -24,9 +25,10 @@
     "method": "POST",
     "timeoutMs": 8000,
     "retries": 5,
-    "retryDelayMs": 500,
+    "retryDelayMs": 5000,
     "retryBackoffMultiplier": 2,
-    "maxRetryDelayMs": 8000,
+    "maxRetryDelayMs": 60000,
+    "minIntervalMs": 500,
     "headers": {
       "Content-Type": "application/json"
     }
