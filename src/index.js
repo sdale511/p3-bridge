@@ -168,10 +168,15 @@ function isSystemdManaged() {
   return Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM || process.env.NOTIFY_SOCKET);
 }
 
+function normalizeLaunchLabel(value) {
+  const label = String(value || '').trim();
+  if (!label || label === '0' || label.toLowerCase() === 'unknown') return null;
+  return label;
+}
+
 function getLaunchctlJobTarget() {
   if (process.platform !== 'darwin') return null;
-  const label = (process.env.LAUNCH_JOB_LABEL || process.env.XPC_SERVICE_NAME || '').trim();
-  if (!label) return null;
+  const label = normalizeLaunchLabel(process.env.LAUNCH_JOB_LABEL || process.env.XPC_SERVICE_NAME) || 'com.p3bridge.node';
   const uid = typeof process.getuid === 'function' ? process.getuid() : null;
   const domain = uid === 0 ? 'system' : `gui/${uid}`;
   return { label, domain, target: `${domain}/${label}` };

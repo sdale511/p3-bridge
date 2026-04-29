@@ -104,6 +104,58 @@ function setByPath(obj, p, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
+function normalizeLaunchLabel(value) {
+  const label = String(value || '').trim();
+  if (!label || label === '0' || label.toLowerCase() === 'unknown') return null;
+  return label;
+}
+
+function detectRuntimeInfo() {
+  const platform = process.platform || 'unknown';
+  const launchLabel = platform === 'darwin'
+    ? (normalizeLaunchLabel(process.env.LAUNCH_JOB_LABEL || process.env.XPC_SERVICE_NAME) || 'com.p3bridge.node')
+    : normalizeLaunchLabel(process.env.LAUNCH_JOB_LABEL || process.env.XPC_SERVICE_NAME);
+  const systemdManaged = Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM || process.env.NOTIFY_SOCKET);
+  const serviceManager = systemdManaged
+    ? 'systemd'
+    : (platform === 'darwin' ? 'launchctl' : 'self-managed');
+
+  let branch = null;
+  let worktreeDirty = null;
+  let hasOrigin = null;
+  try {
+    branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).toString().trim() || null;
+  } catch (_) {}
+  try {
+    worktreeDirty = execSync('git status --porcelain', {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).toString().trim().length > 0;
+  } catch (_) {}
+  try {
+    hasOrigin = execSync('git remote get-url origin', {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).toString().trim().length > 0;
+  } catch (_) {
+    hasOrigin = false;
+  }
+
+  return {
+    platform,
+    serviceManager,
+    launchLabel,
+    branch,
+    worktreeDirty,
+    hasOrigin,
+    gitConfigured: Boolean(branch && hasOrigin),
+    gitPullSafeNow: Boolean(branch && hasOrigin && worktreeDirty === false)
+  };
+}
+
 function isPlainObject(x) {
   return x && typeof x === 'object' && !Array.isArray(x);
 }
@@ -184,7 +236,15 @@ function startAdminServer({ logger, cfgPath, cfgRef, state, requestRestart, setT
   app.get('/healthz', (req, res) => res.json({ ok: true, at: nowIso() }));
 
   app.get('/admin/api/status', (req, res) => {
-    res.json({ ok: true, at: nowIso(), cfgPath, version: buildVersion, gitHash: gitShortHash || null, state: state.snapshot() });
+    res.json({
+      ok: true,
+      at: nowIso(),
+      cfgPath,
+      version: buildVersion,
+      gitHash: gitShortHash || null,
+      runtime: detectRuntimeInfo(),
+      state: state.snapshot()
+    });
   });
 
   app.get('/admin/api/settings', (req, res) => {
@@ -467,8 +527,8 @@ app.get('/admin', (req, res) => {
       <button id="restartBtn">Restart service</button>
       <button id="updateBtn" style="margin-top:8px">Update from git and restart</button>
       <button id="clearStatsBtn" style="margin-top:8px">Clear stats</button>
-      <p><small>Restart asks the service manager to restart the app when available. Update pulls latest code, then restarts.</small></p>
       <div id="actionResult" style="margin-top:8px"></div>
+      <div id="runtimeInfo" class="small" style="margin-top:8px"></div>
     </div>
     <div class="card" style="min-width:320px;max-width:360px">
       <h3>Targets</h3>
@@ -515,6 +575,11 @@ async function api(path, opts){
   return j;
 }
 function fmt(n){ return (n==null)?'—':String(n); }
+function yesNoMaybe(v){
+  if (v === true) return 'yes';
+  if (v === false) return 'no';
+  return 'unknown';
+}
 function formatDuration(totalSec){
   let sec = Number(totalSec);
   if (!Number.isFinite(sec) || sec < 0) return '—';
@@ -630,6 +695,7 @@ async function refresh(){
   try{
     const j = await api('/admin/api/status');
     const s = j.state;
+    const runtime = j.runtime || {};
     const events = Array.isArray(s.recentEvents) ? s.recentEvents : [];
     // populate target inputs if empty
     const tlist = document.getElementById('targetList');
@@ -666,11 +732,21 @@ async function refresh(){
       events.length + ' entr' + (events.length === 1 ? 'y' : 'ies') +
       ' | valid ' + validHits +
       ' | duplicate ' + duplicateHits;
+    const runtimeLines = [];
+    runtimeLines.push('<b>Platform:</b> ' + escapeHtml(fmt(runtime.platform)));
+    runtimeLines.push('<b>Manager:</b> ' + escapeHtml(fmt(runtime.serviceManager)));
+    if (runtime.launchLabel) runtimeLines.push('<b>Launch Label:</b> ' + escapeHtml(fmt(runtime.launchLabel)));
+    runtimeLines.push('<b>Branch:</b> ' + escapeHtml(fmt(runtime.branch)));
+    runtimeLines.push('<b>Worktree Clean:</b> ' + escapeHtml(yesNoMaybe(runtime.worktreeDirty === null ? null : !runtime.worktreeDirty)));
+    runtimeLines.push('<b>Git Configured:</b> ' + escapeHtml(yesNoMaybe(runtime.gitConfigured)));
+    runtimeLines.push('<b>Pull Safe Now:</b> ' + escapeHtml(yesNoMaybe(runtime.gitPullSafeNow)));
+    document.getElementById('runtimeInfo').innerHTML = runtimeLines.join('<br/>');
     document.getElementById('updated').textContent = 'Updated ' + j.at;
   }catch(e){
     document.getElementById('status').textContent = 'Error: ' + e.message;
     document.getElementById('eventFeed').textContent = 'Error: ' + e.message;
     document.getElementById('eventCount').textContent = '0 entries';
+    document.getElementById('runtimeInfo').textContent = 'Error: ' + e.message;
   }
 }
 
