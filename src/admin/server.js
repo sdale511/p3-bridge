@@ -467,7 +467,7 @@ app.get('/admin', (req, res) => {
       <button id="restartBtn">Restart service</button>
       <button id="updateBtn" style="margin-top:8px">Update from git and restart</button>
       <button id="clearStatsBtn" style="margin-top:8px">Clear stats</button>
-      <p><small>Restart stops the app. Update pulls latest code, then restarts.</small></p>
+      <p><small>Restart asks the service manager to restart the app when available. Update pulls latest code, then restarts.</small></p>
       <div id="actionResult" style="margin-top:8px"></div>
     </div>
     <div class="card" style="min-width:320px;max-width:360px">

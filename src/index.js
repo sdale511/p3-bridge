@@ -168,6 +168,15 @@ function isSystemdManaged() {
   return Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM || process.env.NOTIFY_SOCKET);
 }
 
+function getLaunchctlJobTarget() {
+  if (process.platform !== 'darwin') return null;
+  const label = (process.env.LAUNCH_JOB_LABEL || process.env.XPC_SERVICE_NAME || '').trim();
+  if (!label) return null;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const domain = uid === 0 ? 'system' : `gui/${uid}`;
+  return { label, domain, target: `${domain}/${label}` };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -348,7 +357,25 @@ async function main() {
 
     logger.warnMeta(isRestart ? 'Restarting' : 'Shutting down', { reason });
 
-    if (isRestart && !isSystemdManaged()) {
+    const launchctlJob = getLaunchctlJobTarget();
+
+    if (isRestart && launchctlJob) {
+      try {
+        const child = spawn('launchctl', ['kickstart', '-k', launchctlJob.target], {
+          cwd: process.cwd(),
+          env: process.env,
+          detached: true,
+          stdio: 'ignore'
+        });
+        child.unref();
+        logger.infoMeta('Requested launchctl restart', launchctlJob);
+      } catch (err) {
+        logger.errorMeta('Failed to request launchctl restart', {
+          target: launchctlJob.target,
+          message: err?.message
+        });
+      }
+    } else if (isRestart && !isSystemdManaged()) {
       try {
         const child = spawn(process.execPath, process.argv.slice(1), {
           cwd: process.cwd(),
