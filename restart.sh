@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SERVICE_NAME="${P3_BRIDGE_SERVICE_NAME:-p3-bridge}"
-LAUNCHD_LABEL="${P3_BRIDGE_LAUNCHD_LABEL:-$SERVICE_NAME}"
+LAUNCHD_LABEL="${P3_BRIDGE_LAUNCHD_LABEL:-com.p3bridge.node}"
 OS_NAME="$(uname -s)"
 
 echo "Restarting ${SERVICE_NAME}..."
